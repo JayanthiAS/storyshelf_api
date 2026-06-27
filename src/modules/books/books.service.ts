@@ -143,14 +143,27 @@ export class BooksService {
     if (!book || (!admin && (book.deletedAt || book.status !== BookStatus.PUBLISHED))) {
       throw new NotFoundException('Book not found');
     }
-    if (!admin) {
-      await this.checkAccess(book, user);
-    }
+
     const obj = book.toObject() as unknown as Record<string, unknown>;
-    if (book.isLocked && !admin) {
-      delete obj.fileUrl;
-      delete obj.fileKey;
+
+    if (!admin) {
+      if (book.releaseDate && book.releaseDate > new Date()) {
+        throw new ForbiddenException({
+          message: 'Book is not yet released',
+          code: 'BOOK_NOT_RELEASED',
+        });
+      }
+      if (book.isLocked) {
+        const hasAccess =
+          user?.role === Role.USER &&
+          (await this.subscriptionsService.hasActivePaidSubscription(user.sub));
+        if (!hasAccess) {
+          delete obj.fileUrl;
+          delete obj.fileKey;
+        }
+      }
     }
+
     return obj;
   }
 

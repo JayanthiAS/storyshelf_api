@@ -10,9 +10,14 @@ import {
   UseGuards,
   UseInterceptors,
   UploadedFile,
+  UploadedFiles,
+  BadRequestException,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiBearerAuth, ApiTags, ApiConsumes } from '@nestjs/swagger';
+import {
+  FileInterceptor,
+  FileFieldsInterceptor,
+} from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiTags, ApiConsumes, ApiBody } from '@nestjs/swagger';
 import { BooksService } from './books.service';
 import {
   CreateBookDto,
@@ -125,21 +130,56 @@ export class BooksAdminController {
 
   @Post(':id/upload')
   @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: { type: 'string', format: 'binary' },
+      },
+    },
+  })
   @UseInterceptors(FileInterceptor('file'))
   uploadFile(
     @Param('id') id: string,
     @UploadedFile() file: Express.Multer.File,
   ) {
+    if (!file) {
+      throw new BadRequestException(
+        'Book file is required. Send multipart form with field "file".',
+      );
+    }
     return this.booksService.uploadFile(id, file);
   }
 
   @Post(':id/cover')
   @ApiConsumes('multipart/form-data')
-  @UseInterceptors(FileInterceptor('file'))
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string', format: 'binary' },
+        cover: { type: 'string', format: 'binary' },
+      },
+    },
+  })
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'file', maxCount: 1 },
+      { name: 'cover', maxCount: 1 },
+    ]),
+  )
   uploadCover(
     @Param('id') id: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFiles()
+    files: { file?: Express.Multer.File[]; cover?: Express.Multer.File[] },
   ) {
+    const file = files?.file?.[0] ?? files?.cover?.[0];
+    if (!file) {
+      throw new BadRequestException(
+        'Cover image is required. Send multipart form with field "file" or "cover".',
+      );
+    }
     return this.booksService.uploadCover(id, file);
   }
 

@@ -1,6 +1,8 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { SubscriptionsService } from './subscriptions.service';
+import { SubscriptionWebhookService } from './subscription-webhook.service';
+import { StripeModule } from '../stripe/stripe.module';
 import {
   PlansPublicController,
   SubscriptionsController,
@@ -23,6 +25,7 @@ import { User, UserSchema } from '../users/schemas/user.schema';
 
 @Module({
   imports: [
+    StripeModule,
     MongooseModule.forFeature([
       { name: SubscriptionPlan.name, schema: SubscriptionPlanSchema },
       { name: Subscription.name, schema: SubscriptionSchema },
@@ -36,7 +39,7 @@ import { User, UserSchema } from '../users/schemas/user.schema';
     PlansAdminController,
     SubscriptionsAdminController,
   ],
-  providers: [SubscriptionsService],
+  providers: [SubscriptionsService, SubscriptionWebhookService],
   exports: [SubscriptionsService],
 })
 export class SubscriptionsModule {}

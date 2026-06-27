@@ -1,13 +1,12 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { ConfigService } from '@nestjs/config';
-import Stripe from 'stripe';
 import {
   SubscriptionPlan,
   SubscriptionPlanDocument,
@@ -36,6 +35,9 @@ import { SubscriptionStatus } from '../../common/enums/subscription-status.enum'
 import { PlanInterval } from '../../common/enums/plan-interval.enum';
 import { RabbitMQService, QUEUES } from '../../common/services/rabbitmq.service';
 import { NotificationType } from '../../common/enums/notification-type.enum';
+import { StripeService } from '../stripe/stripe.service';
+import { ParsedStripeSubscription } from '../stripe/stripe.types';
+import { StripeWebhookEventPayload } from './stripe-event.types';
 
 interface CheckoutSessionPayload {
   metadata?: { userId?: string; planId?: string };
@@ -44,7 +46,7 @@ interface CheckoutSessionPayload {
 
 @Injectable()
 export class SubscriptionsService {
-  private stripe: InstanceType<typeof Stripe>;
+  private readonly logger = new Logger(SubscriptionsService.name);
 
   constructor(
     @InjectModel(SubscriptionPlan.name)
@@ -54,14 +56,9 @@ export class SubscriptionsService {
     @InjectModel(PaymentEvent.name)
     private paymentEventModel: Model<PaymentEventDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
-    private configService: ConfigService,
+    private stripeService: StripeService,
     private rabbitMQService: RabbitMQService,
-  ) {
-    this.stripe = new Stripe(
-      this.configService.get<string>('STRIPE_SECRET_KEY', 'sk_test_placeholder'),
-      { apiVersion: '2026-05-27.dahlia' },
-    );
-  }
+  ) {}
 
   async hasActivePaidSubscription(userId: string): Promise<boolean> {
     const user = await this.userModel.findById(userId);
@@ -94,33 +91,18 @@ export class SubscriptionsService {
       await this.planModel.updateMany({ isDefault: true }, { isDefault: false });
     }
 
-    let stripeProductId: string | null = null;
-    let stripePriceId: string | null = null;
-
-    if (dto.price > 0 && dto.interval !== PlanInterval.FREE) {
-      try {
-        const product = await this.stripe.products.create({ name: dto.name });
-        stripeProductId = product.id;
-        const price = await this.stripe.prices.create({
-          product: product.id,
-          unit_amount: Math.round(dto.price * 100),
-          currency: dto.currency || 'usd',
-          recurring:
-            dto.interval === PlanInterval.LIFETIME
-              ? undefined
-              : { interval: dto.interval === PlanInterval.YEAR ? 'year' : 'month' },
-        });
-        stripePriceId = price.id;
-      } catch {
-        // Stripe not configured in dev
-      }
-    }
+    const stripeRefs = await this.stripeService.createProductAndPrice({
+      name: dto.name,
+      price: dto.price,
+      currency: dto.currency,
+      interval: dto.interval,
+    });
 
     return this.planModel.create({
       ...dto,
       slug,
-      stripeProductId,
-      stripePriceId,
+      stripeProductId: stripeRefs?.productId ?? null,
+      stripePriceId: stripeRefs?.priceId ?? null,
       unlocksLockedBooks: dto.unlocksLockedBooks ?? dto.price > 0,
     });
   }
@@ -147,10 +129,21 @@ export class SubscriptionsService {
 
   async getMySubscription(userId: string) {
     const subscription = await this.subscriptionModel
-      .findOne({ userId })
+      .findOne({ userId: new Types.ObjectId(userId) })
       .populate('planId');
     if (!subscription) throw new NotFoundException('Subscription not found');
-    return subscription;
+
+    const plan = subscription.planId as unknown as SubscriptionPlanDocument;
+    const subscriptionObj = subscription.toObject() as unknown as Record<string, unknown>;
+    delete subscriptionObj.planId;
+
+    return {
+      subscription: {
+        ...subscriptionObj,
+        planId: plan._id.toString(),
+      },
+      plan,
+    };
   }
 
   async createCheckout(userId: string, dto: CheckoutDto) {
@@ -164,44 +157,24 @@ export class SubscriptionsService {
 
     let customerId = user.stripeCustomerId;
     if (!customerId) {
-      try {
-        const customer = await this.stripe.customers.create({
-          email: user.email,
-          name: `${user.firstName} ${user.lastName}`,
-        });
-        customerId = customer.id;
-        user.stripeCustomerId = customerId;
-        await user.save();
-      } catch {
-        throw new BadRequestException('Stripe not configured');
-      }
+      customerId = await this.stripeService.createCustomer({
+        email: user.email,
+        name: `${user.firstName} ${user.lastName}`,
+      });
+      user.stripeCustomerId = customerId;
+      await user.save();
     }
 
     if (!plan.stripePriceId) {
       throw new BadRequestException('Plan not synced with Stripe');
     }
 
-    const successUrl = this.buildStripeRedirectUrl(
-      'STRIPE_SUCCESS_URL',
-      'http://localhost:3000/api/v1/subscriptions/success?session_id={CHECKOUT_SESSION_ID}',
-      true,
-    );
-    const cancelUrl = this.buildStripeRedirectUrl(
-      'STRIPE_CANCEL_URL',
-      'http://localhost:3000/api/v1/subscriptions/cancel',
-      false,
-    );
-
-    const session = await this.stripe.checkout.sessions.create({
-      customer: customerId,
-      mode: 'subscription',
-      line_items: [{ price: plan.stripePriceId, quantity: 1 }],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      metadata: { userId, planId: plan._id.toString() },
+    return this.stripeService.createCheckoutSession({
+      customerId,
+      priceId: plan.stripePriceId,
+      userId,
+      planId: plan._id.toString(),
     });
-
-    return { url: session.url, sessionId: session.id };
   }
 
   async createPortal(userId: string) {
@@ -209,41 +182,14 @@ export class SubscriptionsService {
     if (!user?.stripeCustomerId) {
       throw new BadRequestException('No Stripe customer found');
     }
-    const session = await this.stripe.billingPortal.sessions.create({
-      customer: user.stripeCustomerId,
-      return_url: this.configService.get('STRIPE_SUCCESS_URL'),
-    });
-    return { url: session.url };
-  }
-
-  private buildStripeRedirectUrl(
-    envKey: string,
-    fallback: string,
-    includeSessionPlaceholder: boolean,
-  ): string {
-    const configured = this.configService.get<string>(envKey, fallback);
-    if (!includeSessionPlaceholder) {
-      return configured;
-    }
-    if (configured.includes('{CHECKOUT_SESSION_ID}')) {
-      return configured;
-    }
-    const separator = configured.includes('?') ? '&' : '?';
-    return `${configured}${separator}session_id={CHECKOUT_SESSION_ID}`;
+    return this.stripeService.createBillingPortalSession(user.stripeCustomerId);
   }
 
   async confirmCheckoutSuccess(sessionId: string, userId?: string) {
-    let session: Awaited<
-      ReturnType<InstanceType<typeof Stripe>['checkout']['sessions']['retrieve']>
-    >;
+    this.logger.log(`Confirming checkout session ${sessionId}`);
+    const session = await this.stripeService.retrieveCheckoutSession(sessionId);
 
-    try {
-      session = await this.stripe.checkout.sessions.retrieve(sessionId);
-    } catch {
-      throw new BadRequestException('Invalid checkout session');
-    }
-
-    const sessionUserId = session.metadata?.userId;
+    const sessionUserId = session.metadata.userId;
     if (!sessionUserId) {
       throw new BadRequestException('Checkout session is missing user metadata');
     }
@@ -256,17 +202,16 @@ export class SubscriptionsService {
       throw new BadRequestException('Checkout session is not complete yet');
     }
 
-    if (session.payment_status !== 'paid') {
+    if (session.paymentStatus !== 'paid') {
       throw new BadRequestException('Payment was not completed');
     }
 
     await this.applyCheckoutSession({
       metadata: {
         userId: sessionUserId,
-        planId: session.metadata?.planId,
+        planId: session.metadata.planId,
       },
-      subscription:
-        typeof session.subscription === 'string' ? session.subscription : null,
+      subscription: session.subscriptionId,
     });
 
     const subscription = await this.subscriptionModel
@@ -308,13 +253,9 @@ export class SubscriptionsService {
     if (!subscription) throw new NotFoundException('Subscription not found');
 
     if (subscription.stripeSubscriptionId) {
-      try {
-        await this.stripe.subscriptions.update(subscription.stripeSubscriptionId, {
-          cancel_at_period_end: true,
-        });
-      } catch {
-        // ignore in dev
-      }
+      await this.stripeService.cancelSubscriptionAtPeriodEnd(
+        subscription.stripeSubscriptionId,
+      );
     }
 
     subscription.cancelledAt = new Date();
@@ -322,44 +263,306 @@ export class SubscriptionsService {
     return { message: 'Subscription will cancel at period end' };
   }
 
-  async handleWebhook(rawBody: Buffer, signature: string) {
-    const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET');
-    let event: ReturnType<InstanceType<typeof Stripe>['webhooks']['constructEvent']>;
-
-    try {
-      event = this.stripe.webhooks.constructEvent(
-        rawBody,
-        signature,
-        webhookSecret || 'whsec_placeholder',
-      );
-    } catch {
-      throw new BadRequestException('Invalid webhook signature');
-    }
-
+  async handleStripeEvent(event: StripeWebhookEventPayload): Promise<void> {
     const existing = await this.paymentEventModel.findOne({
       stripeEventId: event.id,
     });
-    if (existing) return { received: true };
+    if (existing) {
+      this.logger.debug(`Stripe event ${event.id} already processed`);
+      return;
+    }
 
     await this.paymentEventModel.create({
       stripeEventId: event.id,
       type: event.type,
-      payload: event.data.object as unknown as Record<string, unknown>,
+      payload: event.data.object as Record<string, unknown>,
     });
+
+    await this.processStripeEvent(
+      event.type,
+      event.data.object as Record<string, unknown>,
+    );
 
     await this.rabbitMQService.publish(QUEUES.STRIPE_EVENTS, {
       eventId: event.id,
       type: event.type,
       data: event.data.object,
     });
+  }
 
-    if (event.type === 'checkout.session.completed') {
-      await this.applyCheckoutSession(
-        event.data.object as CheckoutSessionPayload,
-      );
+  async processStripeEvent(
+    type: string,
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    this.logger.log(`Processing Stripe webhook event: ${type}`);
+
+    switch (type) {
+      case 'checkout.session.completed':
+        await this.applyCheckoutSession(data as CheckoutSessionPayload);
+        break;
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated':
+        await this.applyStripeSubscriptionUpdate(data);
+        break;
+      case 'customer.subscription.deleted':
+        await this.applyStripeSubscriptionDeleted(data);
+        break;
+      case 'invoice.payment_succeeded':
+        await this.applyInvoicePaymentSucceeded(data);
+        break;
+      case 'invoice.payment_failed':
+        await this.applyInvoicePaymentFailed(data);
+        break;
+      default:
+        this.logger.debug(`Ignoring unhandled Stripe event: ${type}`);
+    }
+  }
+
+  private parseStripeSubscription(
+    data: Record<string, unknown>,
+  ): ParsedStripeSubscription {
+    const items = data.items as
+      | { data?: Array<{ price?: { id?: string } | string }> }
+      | undefined;
+
+    const firstItem = items?.data?.[0];
+    const price = firstItem?.price;
+    const priceId =
+      typeof price === 'string'
+        ? price
+        : typeof price === 'object' && price?.id
+          ? price.id
+          : null;
+
+    const customer = data.customer;
+    const customerId =
+      typeof customer === 'string'
+        ? customer
+        : typeof customer === 'object' &&
+            customer &&
+            'id' in customer &&
+            typeof (customer as { id: unknown }).id === 'string'
+          ? ((customer as { id: string }).id)
+          : null;
+
+    const toDate = (value: unknown): Date | null => {
+      if (typeof value === 'number') return new Date(value * 1000);
+      return null;
+    };
+
+    return {
+      id: String(data.id ?? ''),
+      customerId,
+      status: String(data.status ?? ''),
+      metadata: (data.metadata ?? {}) as { userId?: string; planId?: string },
+      priceId,
+      currentPeriodStart: toDate(data.current_period_start),
+      currentPeriodEnd: toDate(data.current_period_end),
+      cancelAtPeriodEnd: data.cancel_at_period_end === true,
+      canceledAt: toDate(data.canceled_at),
+    };
+  }
+
+  private mapStripeStatus(
+    stripeStatus: string,
+  ): SubscriptionStatus {
+    switch (stripeStatus) {
+      case 'active':
+        return SubscriptionStatus.ACTIVE;
+      case 'trialing':
+        return SubscriptionStatus.TRIALING;
+      case 'past_due':
+      case 'unpaid':
+      case 'incomplete':
+      case 'paused':
+        return SubscriptionStatus.PAST_DUE;
+      case 'canceled':
+      case 'incomplete_expired':
+        return SubscriptionStatus.CANCELLED;
+      default:
+        return SubscriptionStatus.ACTIVE;
+    }
+  }
+
+  private async findPlanByStripePriceId(priceId: string | null) {
+    if (!priceId) return null;
+    return this.planModel.findOne({
+      stripePriceId: priceId,
+      deletedAt: null,
+      isActive: true,
+    });
+  }
+
+  private async findDefaultFreePlan() {
+    return this.planModel.findOne({
+      isDefault: true,
+      isActive: true,
+      deletedAt: null,
+    });
+  }
+
+  private async resolveSubscriptionRecord(
+    stripeSub: ParsedStripeSubscription,
+  ): Promise<{ subscription: SubscriptionDocument; userId: Types.ObjectId } | null> {
+    if (stripeSub.metadata.userId) {
+      const userId = new Types.ObjectId(stripeSub.metadata.userId);
+      const subscription = await this.subscriptionModel.findOne({ userId });
+      if (subscription) return { subscription, userId };
     }
 
-    return { received: true };
+    if (stripeSub.id) {
+      const subscription = await this.subscriptionModel.findOne({
+        stripeSubscriptionId: stripeSub.id,
+      });
+      if (subscription) return { subscription, userId: subscription.userId };
+    }
+
+    if (stripeSub.customerId) {
+      const user = await this.userModel.findOne({
+        stripeCustomerId: stripeSub.customerId,
+      });
+      if (user) {
+        const subscription = await this.subscriptionModel.findOne({
+          userId: user._id,
+        });
+        if (subscription) return { subscription, userId: user._id };
+      }
+    }
+
+    return null;
+  }
+
+  private async syncUserPlan(
+    userId: Types.ObjectId,
+    subscription: SubscriptionDocument,
+    planId: Types.ObjectId,
+  ): Promise<void> {
+    console.log("syncing user plan", userId, subscription, planId);
+    await this.userModel.findByIdAndUpdate(userId, {
+      subscriptionPlanId: planId,
+      subscriptionId: subscription._id,
+    });
+  }
+
+  private async applyStripeSubscriptionUpdate(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const stripeSub = this.parseStripeSubscription(data);
+    if (!stripeSub.id) return;
+
+    const resolved = await this.resolveSubscriptionRecord(stripeSub);
+    console.log("resolved", resolved);
+    if (!resolved) {
+      this.logger.warn(
+        `No local subscription found for Stripe subscription ${stripeSub.id}`,
+      );
+      return;
+    }
+
+    const { subscription, userId } = resolved;
+    const planFromMetadata = stripeSub.metadata.planId
+      ? await this.findPlanById(stripeSub.metadata.planId).catch(() => null)
+      : null;
+    console.log("planFromMetadata", planFromMetadata);
+    const planFromPrice = await this.findPlanByStripePriceId(stripeSub.priceId);
+    console.log("planFromPrice", planFromPrice);
+    const plan = planFromMetadata ?? planFromPrice;
+
+    if (plan && !plan.isDefault) {
+      subscription.planId = plan._id;
+    }
+
+    subscription.stripeSubscriptionId = stripeSub.id;
+    subscription.status = this.mapStripeStatus(stripeSub.status);
+
+    if (stripeSub.currentPeriodStart) {
+      subscription.currentPeriodStart = stripeSub.currentPeriodStart;
+    }
+    if (stripeSub.currentPeriodEnd) {
+      subscription.currentPeriodEnd = stripeSub.currentPeriodEnd;
+    }
+
+    subscription.cancelledAt =
+      stripeSub.cancelAtPeriodEnd || stripeSub.canceledAt
+        ? stripeSub.canceledAt ?? new Date()
+        : null;
+
+    await subscription.save();
+    await this.syncUserPlan(userId, subscription, subscription.planId);
+
+    this.logger.log(
+      `Synced Stripe subscription ${stripeSub.id} for user ${userId.toString()} — status ${subscription.status}`,
+    );
+  }
+
+  private async applyStripeSubscriptionDeleted(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const stripeSub = this.parseStripeSubscription(data);
+    const resolved = await this.resolveSubscriptionRecord(stripeSub);
+    if (!resolved) return;
+
+    const { subscription, userId } = resolved;
+    const freePlan = await this.findDefaultFreePlan();
+    if (!freePlan) {
+      subscription.status = SubscriptionStatus.CANCELLED;
+      subscription.cancelledAt = new Date();
+      await subscription.save();
+      return;
+    }
+
+    subscription.planId = freePlan._id;
+    subscription.status = SubscriptionStatus.ACTIVE;
+    subscription.stripeSubscriptionId = null;
+    subscription.cancelledAt = new Date();
+    subscription.currentPeriodEnd = null;
+    await subscription.save();
+    await this.syncUserPlan(userId, subscription, freePlan._id);
+
+    this.logger.log(
+      `Downgraded user ${userId.toString()} to free plan after Stripe subscription deletion`,
+    );
+  }
+
+  private async applyInvoicePaymentSucceeded(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const stripeSubId =
+      typeof data.subscription === 'string' ? data.subscription : null;
+    if (!stripeSubId) return;
+
+    const subscription = await this.subscriptionModel.findOne({
+      stripeSubscriptionId: stripeSubId,
+    });
+    if (!subscription) return;
+
+    subscription.status = SubscriptionStatus.ACTIVE;
+    subscription.cancelledAt = null;
+    await subscription.save();
+
+    this.logger.log(
+      `Payment succeeded — subscription ${stripeSubId} marked active`,
+    );
+  }
+
+  private async applyInvoicePaymentFailed(
+    data: Record<string, unknown>,
+  ): Promise<void> {
+    const stripeSubId =
+      typeof data.subscription === 'string' ? data.subscription : null;
+    if (!stripeSubId) return;
+
+    const subscription = await this.subscriptionModel.findOne({
+      stripeSubscriptionId: stripeSubId,
+    });
+    if (!subscription) return;
+
+    subscription.status = SubscriptionStatus.PAST_DUE;
+    await subscription.save();
+
+    this.logger.warn(
+      `Payment failed — subscription ${stripeSubId} marked past_due`,
+    );
   }
 
   private async applyCheckoutSession(session: CheckoutSessionPayload) {
@@ -380,7 +583,10 @@ export class SubscriptionsService {
         ? subscription.stripeSubscriptionId === session.subscription
         : true);
 
-    if (alreadyApplied) return;
+    if (alreadyApplied) {
+      this.logger.debug(`Checkout session already applied for user ${userId}`);
+      return;
+    }
 
     subscription.planId = planObjectId;
     subscription.status = SubscriptionStatus.ACTIVE;
@@ -390,10 +596,15 @@ export class SubscriptionsService {
     subscription.cancelledAt = null;
     await subscription.save();
 
-    await this.userModel.findByIdAndUpdate(userId, {
-      subscriptionPlanId: planId,
-      subscriptionId: subscription._id,
-    });
+    await this.syncUserPlan(
+      new Types.ObjectId(userId),
+      subscription,
+      planObjectId,
+    );
+
+    this.logger.log(
+      `Subscription upgraded for user ${userId} to plan ${planId}`,
+    );
 
     await this.rabbitMQService.publish(QUEUES.NOTIFICATIONS_SEND, {
       userId,

@@ -8,12 +8,8 @@ import {
   Param,
   Query,
   UseGuards,
-  Req,
-  Headers,
 } from '@nestjs/common';
-import type { RawBodyRequest } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import type { Request } from 'express';
 import { SubscriptionsService } from './subscriptions.service';
 import {
   CreatePlanDto,
@@ -105,18 +101,6 @@ export class SubscriptionsController {
   @Get('checkout/cancel')
   checkoutCancelAuthenticated(@CurrentUser('sub') userId: string) {
     return this.subscriptionsService.handleCheckoutCancel(userId);
-  }
-
-  @Public()
-  @Post('webhook')
-  webhook(
-    @Req() req: RawBodyRequest<Request>,
-    @Headers('stripe-signature') signature: string,
-  ) {
-    return this.subscriptionsService.handleWebhook(
-      req.rawBody as Buffer,
-      signature,
-    );
   }
 }
 
