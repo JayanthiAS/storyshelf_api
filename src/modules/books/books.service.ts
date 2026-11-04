@@ -205,12 +205,16 @@ export class BooksService {
       seriesId: dto.seriesId ? new Types.ObjectId(dto.seriesId) : null,
       releaseDate: dto.releaseDate ? new Date(dto.releaseDate) : null,
     });
+    if (this.isAvailable(book)) {
+      await this.announceNewBook(book._id.toString());
+    }
     return book;
   }
 
   async update(id: string, dto: UpdateBookDto) {
     const book = await this.bookModel.findOne({ _id: id, deletedAt: null });
     if (!book) throw new NotFoundException('Book not found');
+    const wasAvailable = this.isAvailable(book);
     if (dto.title) book.slug = toSlug(dto.title);
     if (dto.genreIds) book.genreIds = dto.genreIds.map((g) => new Types.ObjectId(g));
     if (dto.authorId) book.authorId = new Types.ObjectId(dto.authorId);
@@ -218,18 +222,21 @@ export class BooksService {
     if (dto.releaseDate) book.releaseDate = new Date(dto.releaseDate);
     Object.assign(book, dto);
     await book.save();
+    if (!wasAvailable && this.isAvailable(book)) {
+      await this.announceNewBook(book._id.toString());
+    }
     return book;
   }
 
   async publish(id: string) {
     const book = await this.bookModel.findOne({ _id: id, deletedAt: null });
     if (!book) throw new NotFoundException('Book not found');
+    const wasAvailable = this.isAvailable(book);
     book.status = BookStatus.PUBLISHED;
     await book.save();
-    await this.rabbitMQService.publish(QUEUES.RECOMMENDATIONS_COMPUTE, {
-      event: 'book.published',
-      bookId: id,
-    });
+    if (!wasAvailable && this.isAvailable(book)) {
+      await this.announceNewBook(book._id.toString());
+    }
     return book;
   }
 
@@ -293,5 +300,17 @@ export class BooksService {
 
   async searchBooks(q: string, query: BookQueryDto) {
     return this.findAll({ ...query, search: q });
+  }
+
+  private isAvailable(book: Pick<Book, 'status' | 'deletedAt' | 'releaseDate'>) {
+    if (book.deletedAt || book.status !== BookStatus.PUBLISHED) return false;
+    return !book.releaseDate || book.releaseDate <= new Date();
+  }
+
+  private announceNewBook(bookId: string) {
+    return this.rabbitMQService.publish(QUEUES.RECOMMENDATIONS_COMPUTE, {
+      event: 'book.published',
+      bookId,
+    });
   }
 }

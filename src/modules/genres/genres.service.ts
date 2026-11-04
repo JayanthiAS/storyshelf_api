@@ -20,6 +20,10 @@ export class GenresService {
     private redisService: RedisService,
   ) {}
 
+  private invalidateListCache(): Promise<void> {
+    return this.redisService.delByPattern('genres:list:*');
+  }
+
   async findAll(query: QueryDto) {
     const cacheKey = `genres:list:${JSON.stringify(query)}`;
     const cached = await this.redisService.get(cacheKey);
@@ -64,8 +68,18 @@ export class GenresService {
   async create(dto: CreateGenreDto) {
     const slug = toSlug(dto.name);
     const existing = await this.genreModel.findOne({ slug });
-    if (existing) throw new ConflictException('Genre already exists');
-    const genre = await this.genreModel.create({ ...dto, slug });
+    if (existing && !existing.deletedAt) {
+      throw new ConflictException('Genre already exists');
+    }
+
+    let genre: GenreDocument;
+    if (existing) {
+      Object.assign(existing, dto, { slug, deletedAt: null });
+      genre = await existing.save();
+    } else {
+      genre = await this.genreModel.create({ ...dto, slug });
+    }
+    await this.invalidateListCache();
     return genre;
   }
 
@@ -75,6 +89,7 @@ export class GenresService {
     if (dto.name) genre.slug = toSlug(dto.name);
     Object.assign(genre, dto);
     await genre.save();
+    await this.invalidateListCache();
     return genre;
   }
 
@@ -83,6 +98,7 @@ export class GenresService {
     if (!genre) throw new NotFoundException('Genre not found');
     genre.deletedAt = new Date();
     await genre.save();
+    await this.invalidateListCache();
     return { message: 'Genre soft deleted' };
   }
 
@@ -91,6 +107,7 @@ export class GenresService {
     if (!genre) throw new NotFoundException('Deleted genre not found');
     genre.deletedAt = null;
     await genre.save();
+    await this.invalidateListCache();
     return genre;
   }
 }

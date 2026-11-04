@@ -31,6 +31,11 @@ export class CreateUserDto {
   @IsOptional()
   @IsBoolean()
   isSuperAdmin?: boolean;
+
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  isEmailVerified?: boolean;
 }
 
 export class UpdateUserDto {
@@ -57,6 +62,10 @@ export class UpdateUserDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isEmailVerified?: boolean;
 }
 
 export class UpdateProfileDto {

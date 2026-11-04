@@ -104,19 +104,34 @@ export class ReadingActivityService {
     const book = await this.bookModel.findById(bookId);
     if (!book) throw new NotFoundException('Book not found');
 
-    const progress = await this.progressModel.findOneAndUpdate(
+    const filter = {
+      userId: new Types.ObjectId(userId),
+      bookId: new Types.ObjectId(bookId),
+    };
+    const existing = await this.progressModel.findOne(filter);
+
+    const totalPages = dto.totalPages || book.pageCount || 0;
+    const currentPage = totalPages
+      ? Math.min(Math.max(dto.currentPage, 0), totalPages)
+      : Math.max(dto.currentPage, 0);
+    const percentComplete = totalPages
+      ? Math.round((currentPage / totalPages) * 100)
+      : 0;
+    const reachedEnd = totalPages > 0 && currentPage >= totalPages;
+    const isCompleted = existing?.isCompleted || reachedEnd;
+
+    return this.progressModel.findOneAndUpdate(
+      filter,
       {
-        userId: new Types.ObjectId(userId),
-        bookId: new Types.ObjectId(bookId),
-      },
-      {
-        ...dto,
-        totalPages: dto.totalPages || book.pageCount || 0,
+        currentPage,
+        totalPages,
+        percentComplete: isCompleted ? 100 : percentComplete,
+        isCompleted,
+        completedAt: existing?.completedAt ?? (reachedEnd ? new Date() : null),
         lastReadAt: new Date(),
       },
       { upsert: true, new: true },
     );
-    return progress;
   }
 
   async createSession(userId: string, dto: CreateSessionDto) {

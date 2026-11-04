@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { UsersService } from './users.service';
 import { AdminUsersController, UsersController } from './users.controller';
@@ -7,6 +7,7 @@ import {
   Subscription,
   SubscriptionSchema,
 } from '../subscriptions/schemas/subscription.schema';
+import { SubscriptionsModule } from '../subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import {
       { name: User.name, schema: UserSchema },
       { name: Subscription.name, schema: SubscriptionSchema },
     ]),
+    forwardRef(() => SubscriptionsModule),
   ],
   controllers: [AdminUsersController, UsersController],
   providers: [UsersService],

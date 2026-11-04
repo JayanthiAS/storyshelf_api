@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Book, BookDocument } from '../books/schemas/book.schema';
@@ -19,6 +19,8 @@ import { QueryDto } from '../authors/dto/author.dto';
 
 @Injectable()
 export class RecommendationsService {
+  private readonly logger = new Logger(RecommendationsService.name);
+
   constructor(
     @InjectModel(Book.name) private bookModel: Model<BookDocument>,
     @InjectModel(BookLike.name) private likeModel: Model<BookLikeDocument>,
@@ -161,6 +163,11 @@ export class RecommendationsService {
   }
 
   async processRecommendationEvent(payload: Record<string, unknown>) {
+    if (payload.event === 'book.published' && payload.bookId) {
+      await this.notifyReadersOfNewBook(String(payload.bookId));
+      return;
+    }
+
     const userId = payload.userId as string;
     if (!userId) return;
 
@@ -188,5 +195,87 @@ export class RecommendationsService {
       await this.redisService.set(todayKey, String(count + 1), 24 * 60 * 60);
       break;
     }
+  }
+
+  private async notifyReadersOfNewBook(bookId: string) {
+    const announcedKey = `book:announced:${bookId}`;
+    if (await this.redisService.exists(announcedKey)) return;
+
+    const book = await this.bookModel.findById(bookId);
+    if (!book || book.deletedAt || book.status !== BookStatus.PUBLISHED) return;
+    if (book.releaseDate && book.releaseDate > new Date()) return;
+
+    const matches = await this.findReadersForBook(book);
+    if (!matches.size) {
+      await this.redisService.set(announcedKey, '1', 90 * 24 * 60 * 60);
+      return;
+    }
+
+    const sent = await this.notificationsService.createForUsers(
+      [...matches.entries()].map(([userId, reason]) => ({
+        userId,
+        type: NotificationType.RELEASE,
+        title: 'New book for you',
+        body:
+          reason === 'author'
+            ? `"${book.title}" is new, and it's by an author you've read before.`
+            : `"${book.title}" is new and matches genres you've been reading.`,
+        metadata: { bookId: book._id.toString() },
+      })),
+    );
+
+    await this.redisService.set(announcedKey, '1', 90 * 24 * 60 * 60);
+    this.logger.log(`Notified ${sent} readers about "${book.title}"`);
+  }
+
+  private async findReadersForBook(book: BookDocument) {
+    const genreIds = book.genreIds ?? [];
+    const authorId = book.authorId.toString();
+    const historyFilter: Record<string, unknown>[] = [
+      { authorId: book.authorId },
+    ];
+    if (genreIds.length) historyFilter.push({ genreIds: { $in: genreIds } });
+
+    const relatedBooks = await this.bookModel
+      .find({ _id: { $ne: book._id }, $or: historyFilter })
+      .select('_id authorId');
+
+    const authorBookIds = relatedBooks
+      .filter((related) => related.authorId.toString() === authorId)
+      .map((related) => related._id);
+    const genreBookIds = relatedBooks
+      .filter((related) => related.authorId.toString() !== authorId)
+      .map((related) => related._id);
+
+    const [authorProgress, genreProgress, authorSessions, genreSessions] =
+      await Promise.all([
+        authorBookIds.length
+          ? this.progressModel.distinct('userId', { bookId: { $in: authorBookIds } })
+          : [],
+        genreBookIds.length
+          ? this.progressModel.distinct('userId', { bookId: { $in: genreBookIds } })
+          : [],
+        this.sessionModel.distinct('userId', {
+          authorId: book.authorId,
+          bookId: { $ne: book._id },
+        }),
+        genreIds.length
+          ? this.sessionModel.distinct('userId', {
+              genreIds: { $in: genreIds },
+              bookId: { $ne: book._id },
+            })
+          : [],
+      ]);
+
+    const matches = new Map<string, 'author' | 'genre'>();
+    const prefer = (userId: unknown, reason: 'author' | 'genre') => {
+      const id = String(userId);
+      if (!id || matches.get(id) === 'author') return;
+      matches.set(id, reason);
+    };
+
+    for (const userId of [...genreProgress, ...genreSessions]) prefer(userId, 'genre');
+    for (const userId of [...authorProgress, ...authorSessions]) prefer(userId, 'author');
+    return matches;
   }
 }

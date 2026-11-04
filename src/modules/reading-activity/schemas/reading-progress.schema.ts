@@ -20,6 +20,12 @@ export class ReadingProgress {
   @Prop({ default: 0 })
   percentComplete: number;
 
+  @Prop({ default: false })
+  isCompleted: boolean;
+
+  @Prop({ type: Date, default: null })
+  completedAt: Date | null;
+
   @Prop({ type: Date, default: Date.now })
   lastReadAt: Date;
 }

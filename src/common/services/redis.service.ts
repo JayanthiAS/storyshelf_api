@@ -44,6 +44,13 @@ export class RedisService implements OnModuleDestroy {
     await this.client.del(key);
   }
 
+  async delByPattern(pattern: string): Promise<void> {
+    const stream = this.client.scanStream({ match: pattern, count: 100 });
+    for await (const keys of stream as AsyncIterable<string[]>) {
+      if (keys.length) await this.client.del(...keys);
+    }
+  }
+
   async exists(key: string): Promise<boolean> {
     return (await this.client.exists(key)) === 1;
   }

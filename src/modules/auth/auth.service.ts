@@ -247,7 +247,8 @@ export class AuthService {
       if (!user || user.deletedAt || !user.isActive) {
         throw new UnauthorizedException('User not found');
       }
-      return this.generateTokens(user);
+      const tokens = await this.generateTokens(user);
+      return { user: this.sanitizeUser(user), ...tokens };
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }

@@ -37,11 +37,17 @@ import { RabbitMQService, QUEUES } from '../../common/services/rabbitmq.service'
 import { NotificationType } from '../../common/enums/notification-type.enum';
 import { StripeService } from '../stripe/stripe.service';
 import { ParsedStripeSubscription } from '../stripe/stripe.types';
+import {
+  extractStripeId,
+  parseBillingPeriods,
+  parseInvoicePeriodEnd,
+  parseStripeSubscriptionPayload,
+} from '../stripe/stripe-subscription.util';
 import { StripeWebhookEventPayload } from './stripe-event.types';
 
 interface CheckoutSessionPayload {
   metadata?: { userId?: string; planId?: string };
-  subscription?: string | null;
+  subscription?: unknown;
 }
 
 @Injectable()
@@ -127,11 +133,46 @@ export class SubscriptionsService {
     return { message: 'Plan deactivated' };
   }
 
+  private async ensureUserSubscription(
+    userId: Types.ObjectId,
+  ): Promise<SubscriptionDocument> {
+    const existing = await this.subscriptionModel.findOne({ userId });
+    if (existing) return existing;
+
+    const freePlan = await this.findDefaultFreePlan();
+    if (!freePlan) {
+      throw new BadRequestException('Default subscription plan not configured');
+    }
+
+    const subscription = await this.subscriptionModel.create({
+      userId,
+      planId: freePlan._id,
+      status: SubscriptionStatus.ACTIVE,
+      currentPeriodStart: new Date(),
+    });
+
+    await this.userModel.findByIdAndUpdate(userId, {
+      subscriptionId: subscription._id,
+      subscriptionPlanId: freePlan._id,
+    });
+
+    this.logger.log(
+      `Provisioned missing subscription for user ${userId.toString()}`,
+    );
+    return subscription;
+  }
+
+  async provisionDefaultSubscription(
+    userId: string,
+  ): Promise<SubscriptionDocument> {
+    return this.ensureUserSubscription(new Types.ObjectId(userId));
+  }
+
   async getMySubscription(userId: string) {
-    const subscription = await this.subscriptionModel
-      .findOne({ userId: new Types.ObjectId(userId) })
-      .populate('planId');
-    if (!subscription) throw new NotFoundException('Subscription not found');
+    const subscription = await this.ensureUserSubscription(
+      new Types.ObjectId(userId),
+    );
+    await subscription.populate('planId');
 
     const plan = subscription.planId as unknown as SubscriptionPlanDocument;
     const subscriptionObj = subscription.toObject() as unknown as Record<string, unknown>;
@@ -154,6 +195,8 @@ export class SubscriptionsService {
 
     const user = await this.userModel.findById(userId);
     if (!user) throw new NotFoundException('User not found');
+
+    await this.ensureUserSubscription(new Types.ObjectId(userId));
 
     let customerId = user.stripeCustomerId;
     if (!customerId) {
@@ -267,8 +310,15 @@ export class SubscriptionsService {
     const existing = await this.paymentEventModel.findOne({
       stripeEventId: event.id,
     });
+
     if (existing) {
-      this.logger.debug(`Stripe event ${event.id} already processed`);
+      this.logger.debug(
+        `Stripe event ${event.id} already recorded, re-syncing subscription`,
+      );
+      await this.processStripeEvent(
+        event.type,
+        event.data.object as Record<string, unknown>,
+      );
       return;
     }
 
@@ -282,12 +332,6 @@ export class SubscriptionsService {
       event.type,
       event.data.object as Record<string, unknown>,
     );
-
-    await this.rabbitMQService.publish(QUEUES.STRIPE_EVENTS, {
-      eventId: event.id,
-      type: event.type,
-      data: event.data.object,
-    });
   }
 
   async processStripeEvent(
@@ -321,46 +365,7 @@ export class SubscriptionsService {
   private parseStripeSubscription(
     data: Record<string, unknown>,
   ): ParsedStripeSubscription {
-    const items = data.items as
-      | { data?: Array<{ price?: { id?: string } | string }> }
-      | undefined;
-
-    const firstItem = items?.data?.[0];
-    const price = firstItem?.price;
-    const priceId =
-      typeof price === 'string'
-        ? price
-        : typeof price === 'object' && price?.id
-          ? price.id
-          : null;
-
-    const customer = data.customer;
-    const customerId =
-      typeof customer === 'string'
-        ? customer
-        : typeof customer === 'object' &&
-            customer &&
-            'id' in customer &&
-            typeof (customer as { id: unknown }).id === 'string'
-          ? ((customer as { id: string }).id)
-          : null;
-
-    const toDate = (value: unknown): Date | null => {
-      if (typeof value === 'number') return new Date(value * 1000);
-      return null;
-    };
-
-    return {
-      id: String(data.id ?? ''),
-      customerId,
-      status: String(data.status ?? ''),
-      metadata: (data.metadata ?? {}) as { userId?: string; planId?: string },
-      priceId,
-      currentPeriodStart: toDate(data.current_period_start),
-      currentPeriodEnd: toDate(data.current_period_end),
-      cancelAtPeriodEnd: data.cancel_at_period_end === true,
-      canceledAt: toDate(data.canceled_at),
-    };
+    return parseStripeSubscriptionPayload(data);
   }
 
   private mapStripeStatus(
@@ -406,8 +411,8 @@ export class SubscriptionsService {
   ): Promise<{ subscription: SubscriptionDocument; userId: Types.ObjectId } | null> {
     if (stripeSub.metadata.userId) {
       const userId = new Types.ObjectId(stripeSub.metadata.userId);
-      const subscription = await this.subscriptionModel.findOne({ userId });
-      if (subscription) return { subscription, userId };
+      const subscription = await this.ensureUserSubscription(userId);
+      return { subscription, userId };
     }
 
     if (stripeSub.id) {
@@ -422,10 +427,8 @@ export class SubscriptionsService {
         stripeCustomerId: stripeSub.customerId,
       });
       if (user) {
-        const subscription = await this.subscriptionModel.findOne({
-          userId: user._id,
-        });
-        if (subscription) return { subscription, userId: user._id };
+        const subscription = await this.ensureUserSubscription(user._id);
+        return { subscription, userId: user._id };
       }
     }
 
@@ -437,11 +440,22 @@ export class SubscriptionsService {
     subscription: SubscriptionDocument,
     planId: Types.ObjectId,
   ): Promise<void> {
-    console.log("syncing user plan", userId, subscription, planId);
     await this.userModel.findByIdAndUpdate(userId, {
       subscriptionPlanId: planId,
       subscriptionId: subscription._id,
     });
+  }
+
+  private applyBillingPeriods(
+    subscription: SubscriptionDocument,
+    periods: { currentPeriodStart: Date | null; currentPeriodEnd: Date | null },
+  ): void {
+    if (periods.currentPeriodStart) {
+      subscription.currentPeriodStart = periods.currentPeriodStart;
+    }
+    if (periods.currentPeriodEnd) {
+      subscription.currentPeriodEnd = periods.currentPeriodEnd;
+    }
   }
 
   private async applyStripeSubscriptionUpdate(
@@ -451,7 +465,6 @@ export class SubscriptionsService {
     if (!stripeSub.id) return;
 
     const resolved = await this.resolveSubscriptionRecord(stripeSub);
-    console.log("resolved", resolved);
     if (!resolved) {
       this.logger.warn(
         `No local subscription found for Stripe subscription ${stripeSub.id}`,
@@ -463,9 +476,7 @@ export class SubscriptionsService {
     const planFromMetadata = stripeSub.metadata.planId
       ? await this.findPlanById(stripeSub.metadata.planId).catch(() => null)
       : null;
-    console.log("planFromMetadata", planFromMetadata);
     const planFromPrice = await this.findPlanByStripePriceId(stripeSub.priceId);
-    console.log("planFromPrice", planFromPrice);
     const plan = planFromMetadata ?? planFromPrice;
 
     if (plan && !plan.isDefault) {
@@ -474,12 +485,13 @@ export class SubscriptionsService {
 
     subscription.stripeSubscriptionId = stripeSub.id;
     subscription.status = this.mapStripeStatus(stripeSub.status);
+    this.applyBillingPeriods(subscription, stripeSub);
 
-    if (stripeSub.currentPeriodStart) {
-      subscription.currentPeriodStart = stripeSub.currentPeriodStart;
-    }
-    if (stripeSub.currentPeriodEnd) {
-      subscription.currentPeriodEnd = stripeSub.currentPeriodEnd;
+    if (!subscription.currentPeriodEnd && stripeSub.id) {
+      const fetched = await this.stripeService.retrieveSubscription(stripeSub.id);
+      if (fetched) {
+        this.applyBillingPeriods(subscription, fetched);
+      }
     }
 
     subscription.cancelledAt =
@@ -527,8 +539,7 @@ export class SubscriptionsService {
   private async applyInvoicePaymentSucceeded(
     data: Record<string, unknown>,
   ): Promise<void> {
-    const stripeSubId =
-      typeof data.subscription === 'string' ? data.subscription : null;
+    const stripeSubId = extractStripeId(data.subscription);
     if (!stripeSubId) return;
 
     const subscription = await this.subscriptionModel.findOne({
@@ -538,6 +549,12 @@ export class SubscriptionsService {
 
     subscription.status = SubscriptionStatus.ACTIVE;
     subscription.cancelledAt = null;
+
+    const periodEnd = parseInvoicePeriodEnd(data);
+    if (periodEnd) {
+      subscription.currentPeriodEnd = periodEnd;
+    }
+
     await subscription.save();
 
     this.logger.log(
@@ -548,8 +565,7 @@ export class SubscriptionsService {
   private async applyInvoicePaymentFailed(
     data: Record<string, unknown>,
   ): Promise<void> {
-    const stripeSubId =
-      typeof data.subscription === 'string' ? data.subscription : null;
+    const stripeSubId = extractStripeId(data.subscription);
     if (!stripeSubId) return;
 
     const subscription = await this.subscriptionModel.findOne({
@@ -568,20 +584,24 @@ export class SubscriptionsService {
   private async applyCheckoutSession(session: CheckoutSessionPayload) {
     const userId = session.metadata?.userId;
     const planId = session.metadata?.planId;
-    if (!userId || !planId) return;
+    if (!userId || !planId) {
+      this.logger.warn('Checkout session missing userId or planId metadata');
+      return;
+    }
 
-    const subscription = await this.subscriptionModel.findOne({
-      userId: new Types.ObjectId(userId),
-    });
-    if (!subscription) return;
+    const subscription = await this.ensureUserSubscription(
+      new Types.ObjectId(userId),
+    );
 
     const planObjectId = new Types.ObjectId(planId);
+    const stripeSubId = extractStripeId(session.subscription);
+
     const alreadyApplied =
       subscription.planId.equals(planObjectId) &&
       subscription.status === SubscriptionStatus.ACTIVE &&
-      (session.subscription
-        ? subscription.stripeSubscriptionId === session.subscription
-        : true);
+      !!subscription.stripeSubscriptionId &&
+      (!stripeSubId || subscription.stripeSubscriptionId === stripeSubId) &&
+      !!subscription.currentPeriodEnd;
 
     if (alreadyApplied) {
       this.logger.debug(`Checkout session already applied for user ${userId}`);
@@ -590,10 +610,33 @@ export class SubscriptionsService {
 
     subscription.planId = planObjectId;
     subscription.status = SubscriptionStatus.ACTIVE;
-    subscription.stripeSubscriptionId =
-      typeof session.subscription === 'string' ? session.subscription : null;
-    subscription.currentPeriodStart = new Date();
     subscription.cancelledAt = null;
+
+    if (stripeSubId) {
+      subscription.stripeSubscriptionId = stripeSubId;
+
+      if (
+        session.subscription &&
+        typeof session.subscription === 'object' &&
+        !Array.isArray(session.subscription)
+      ) {
+        this.applyBillingPeriods(
+          subscription,
+          parseBillingPeriods(session.subscription as Record<string, unknown>),
+        );
+      } else {
+        const details =
+          await this.stripeService.retrieveSubscription(stripeSubId);
+        if (details) {
+          this.applyBillingPeriods(subscription, details);
+        }
+      }
+    }
+
+    if (!subscription.currentPeriodStart) {
+      subscription.currentPeriodStart = new Date();
+    }
+
     await subscription.save();
 
     await this.syncUserPlan(

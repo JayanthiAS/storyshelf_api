@@ -90,6 +90,64 @@ export class NotificationsService {
     });
   }
 
+  async createForUsers(
+    items: Array<{
+      userId: string;
+      type: NotificationType;
+      title: string;
+      body: string;
+      metadata?: Record<string, string>;
+    }>,
+  ): Promise<number> {
+    if (!items.length) return 0;
+
+    const byUser = new Map<string, (typeof items)[number]>();
+    for (const item of items) byUser.set(item.userId, item);
+
+    const users = await this.userModel
+      .find({
+        _id: { $in: [...byUser.keys()].map((id) => new Types.ObjectId(id)) },
+        deletedAt: null,
+        isActive: true,
+        role: Role.USER,
+      })
+      .select('_id');
+    if (!users.length) return 0;
+
+    const bookId = items[0].metadata?.bookId;
+    const already = new Set<string>();
+    if (bookId) {
+      const existing = await this.notificationModel
+        .find({
+          userId: { $in: users.map((user) => user._id) },
+          type: items[0].type,
+          'metadata.bookId': bookId,
+          deletedAt: null,
+        })
+        .select('userId');
+      for (const notification of existing) {
+        already.add(notification.userId.toString());
+      }
+    }
+
+    const docs = users
+      .filter((user) => !already.has(user._id.toString()))
+      .map((user) => {
+        const item = byUser.get(user._id.toString())!;
+        return {
+          userId: user._id,
+          type: item.type,
+          title: item.title,
+          body: item.body,
+          metadata: item.metadata ?? {},
+        };
+      });
+    if (!docs.length) return 0;
+
+    await this.notificationModel.insertMany(docs);
+    return docs.length;
+  }
+
   async createFromQueue(payload: Record<string, unknown>) {
     return this.notificationModel.create({
       userId: new Types.ObjectId(payload.userId as string),

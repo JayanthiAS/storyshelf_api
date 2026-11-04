@@ -11,6 +11,11 @@ import {
   StripeProductPriceInput,
   StripeProductPriceResult,
 } from './stripe.types';
+import {
+  extractStripeId,
+  parseBillingPeriods,
+  parseStripeSubscriptionPayload,
+} from './stripe-subscription.util';
 
 @Injectable()
 export class StripeService {
@@ -92,7 +97,9 @@ export class StripeService {
 
   async retrieveCheckoutSession(sessionId: string): Promise<StripeCheckoutSessionData> {
     try {
-      const session = await this.client.checkout.sessions.retrieve(sessionId);
+      const session = await this.client.checkout.sessions.retrieve(sessionId, {
+        expand: ['subscription'],
+      });
       return {
         id: session.id,
         status: session.status,
@@ -101,11 +108,44 @@ export class StripeService {
           userId: session.metadata?.userId,
           planId: session.metadata?.planId,
         },
-        subscriptionId:
-          typeof session.subscription === 'string' ? session.subscription : null,
+        subscriptionId: extractStripeId(session.subscription),
       };
     } catch {
       throw new BadRequestException('Invalid checkout session');
+    }
+  }
+
+  async retrieveSubscription(subscriptionId: string): Promise<{
+    currentPeriodStart: Date | null;
+    currentPeriodEnd: Date | null;
+  } | null> {
+    try {
+      const subscription = await this.client.subscriptions.retrieve(
+        subscriptionId,
+        { expand: ['items.data.price'] },
+      );
+      return parseBillingPeriods(
+        subscription as unknown as Record<string, unknown>,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to retrieve Stripe subscription ${subscriptionId}: ${(error as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  async retrieveSubscriptionDetails(subscriptionId: string) {
+    try {
+      const subscription = await this.client.subscriptions.retrieve(
+        subscriptionId,
+        { expand: ['items.data.price'] },
+      );
+      return parseStripeSubscriptionPayload(
+        subscription as unknown as Record<string, unknown>,
+      );
+    } catch {
+      return null;
     }
   }
 

@@ -3,6 +3,8 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
@@ -12,6 +14,7 @@ import {
   Subscription,
   SubscriptionDocument,
 } from '../subscriptions/schemas/subscription.schema';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import {
   CreateUserDto,
   UpdateUserDto,
@@ -31,6 +34,8 @@ export class UsersService {
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     @InjectModel(Subscription.name)
     private subscriptionModel: Model<SubscriptionDocument>,
+    @Inject(forwardRef(() => SubscriptionsService))
+    private subscriptionsService: SubscriptionsService,
   ) {}
 
   private sanitize(user: UserDocument) {
@@ -91,7 +96,11 @@ export class UsersService {
       passwordHash,
       role: dto.role || Role.USER,
       isSuperAdmin: dto.isSuperAdmin || false,
+      isEmailVerified: dto.isEmailVerified ?? true,
     });
+    await this.subscriptionsService.provisionDefaultSubscription(
+      user._id.toString(),
+    );
     return this.sanitize(user);
   }
 

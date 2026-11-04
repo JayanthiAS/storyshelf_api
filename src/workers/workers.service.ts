@@ -1,6 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { RabbitMQService, QUEUES } from '../common/services/rabbitmq.service';
-import { StripeWebhookEventPayload } from '../modules/subscriptions/stripe-event.types';
 import { NotificationsService } from '../modules/notifications/notifications.service';
 import { RecommendationsService } from '../modules/recommendations/recommendations.service';
 import { SubscriptionsService } from '../modules/subscriptions/subscriptions.service';
@@ -33,11 +32,10 @@ export class WorkersService implements OnModuleInit {
 
     await this.rabbitMQService.consume(QUEUES.STRIPE_EVENTS, async (payload) => {
       this.logger.log(`Processing Stripe event from queue: ${payload.type}`);
-      await this.subscriptionsService.handleStripeEvent({
-        id: payload.eventId as string,
-        type: payload.type as string,
-        data: { object: payload.data as Record<string, unknown> },
-      } satisfies StripeWebhookEventPayload);
+      await this.subscriptionsService.processStripeEvent(
+        payload.type as string,
+        payload.data as Record<string, unknown>,
+      );
     });
 
     if (this.rabbitMQService.isConnected()) {
