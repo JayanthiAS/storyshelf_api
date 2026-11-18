@@ -22,10 +22,10 @@ export class SearchController {
   @Public()
   @Get('suggest')
   async suggest(@Query('q') q: string) {
-    if (!q || q.length < 2) return { data: [] };
+    if (!q || q.length < 2) return [];
     const cacheKey = `search:suggest:${q.toLowerCase()}`;
     const cached = await this.redisService.get(cacheKey);
-    if (cached) return { data: JSON.parse(cached) };
+    if (cached) return JSON.parse(cached);
 
     const result = await this.booksService.searchBooks(q, { limit: 5 });
     const suggestions = result.data.map((b) => ({
@@ -33,6 +33,6 @@ export class SearchController {
       title: b.title,
     }));
     await this.redisService.set(cacheKey, JSON.stringify(suggestions), 300);
-    return { data: suggestions };
+    return suggestions;
   }
 }

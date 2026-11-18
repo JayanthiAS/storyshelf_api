@@ -18,6 +18,7 @@ import { Book, BookDocument } from '../books/schemas/book.schema';
 import {
   UpdateProgressDto,
   CreateSessionDto,
+  UpdateSessionDto,
   QueryDto,
 } from './dto/reading.dto';
 import {
@@ -148,13 +149,38 @@ export class ReadingActivityService {
       endedAt: new Date(dto.endedAt),
     });
 
-    await this.rabbitMQService.publish(QUEUES.RECOMMENDATIONS_COMPUTE, {
-      event: 'reading.session.completed',
-      userId,
-      bookId: dto.bookId,
-    });
+    if (dto.durationSeconds > 5) {
+      await this.publishSessionCompleted(userId, dto.bookId);
+    }
 
     return session;
+  }
+
+  async updateSession(userId: string, sessionId: string, dto: UpdateSessionDto) {
+    const session = await this.sessionModel.findOne({
+      _id: sessionId,
+      userId: new Types.ObjectId(userId),
+    });
+    if (!session) throw new NotFoundException('Reading session not found');
+
+    const wasShort = session.durationSeconds <= 5;
+    session.durationSeconds = dto.durationSeconds;
+    session.endedAt = new Date(dto.endedAt);
+    await session.save();
+
+    if (wasShort && dto.durationSeconds > 5) {
+      await this.publishSessionCompleted(userId, session.bookId.toString());
+    }
+
+    return session;
+  }
+
+  private publishSessionCompleted(userId: string, bookId: string) {
+    return this.rabbitMQService.publish(QUEUES.RECOMMENDATIONS_COMPUTE, {
+      event: 'reading.session.completed',
+      userId,
+      bookId,
+    });
   }
 
   async getHistory(userId: string, query: QueryDto) {

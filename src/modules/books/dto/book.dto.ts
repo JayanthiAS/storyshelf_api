@@ -115,7 +115,13 @@ export class BookQueryDto {
   sort?: string;
 
   @IsOptional()
+  @IsString()
   search?: string;
+
+  /** Public search box query. Accepted so /search/books?q= is not rejected. */
+  @IsOptional()
+  @IsString()
+  q?: string;
 
   @IsOptional()
   genre?: string;
@@ -128,6 +134,10 @@ export class BookQueryDto {
 
   @IsOptional()
   isLocked?: string;
+
+  @IsOptional()
+  @IsEnum(BookStatus)
+  status?: BookStatus;
 }
 
 export class LockBookDto {

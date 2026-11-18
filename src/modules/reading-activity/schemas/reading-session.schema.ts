@@ -30,3 +30,5 @@ export class ReadingSession {
 export const ReadingSessionSchema =
   SchemaFactory.createForClass(ReadingSession);
 ReadingSessionSchema.index({ userId: 1 });
+ReadingSessionSchema.index({ startedAt: 1, userId: 1 });
+ReadingSessionSchema.index({ bookId: 1, startedAt: 1 });

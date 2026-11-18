@@ -1,6 +1,7 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AdminDashboardService } from './admin-dashboard.service';
+import { AnalyticsQueryDto } from './dto/analytics-query.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -17,6 +18,11 @@ export class AdminDashboardController {
   @Get('stats')
   getStats() {
     return this.dashboardService.getStats();
+  }
+
+  @Get('analytics')
+  getAnalytics(@Query() query: AnalyticsQueryDto) {
+    return this.dashboardService.getAnalytics(query.granularity ?? 'month');
   }
 
   @Get('recent-activity')

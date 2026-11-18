@@ -24,6 +24,10 @@ import {
   SubscriptionDocument,
 } from '../subscriptions/schemas/subscription.schema';
 import {
+  LoginActivity,
+  LoginActivityDocument,
+} from './schemas/login-activity.schema';
+import {
   RegisterDto,
   LoginDto,
   VerifyOtpDto,
@@ -48,6 +52,8 @@ export class AuthService {
     private planModel: Model<SubscriptionPlanDocument>,
     @InjectModel(Subscription.name)
     private subscriptionModel: Model<SubscriptionDocument>,
+    @InjectModel(LoginActivity.name)
+    private loginActivityModel: Model<LoginActivityDocument>,
     private jwtService: JwtService,
     private configService: ConfigService,
     private redisService: RedisService,
@@ -231,6 +237,16 @@ export class AuthService {
     if (adminOnly && user.role !== Role.ADMIN) {
       throw new UnauthorizedException('Admin access required');
     }
+
+    const loggedInAt = new Date();
+    await Promise.all([
+      this.userModel.updateOne({ _id: user._id }, { lastLoginAt: loggedInAt }),
+      this.loginActivityModel.create({
+        userId: user._id,
+        role: user.role,
+        loggedInAt,
+      }),
+    ]);
 
     const tokens = await this.generateTokens(user);
     return { user: this.sanitizeUser(user), ...tokens };

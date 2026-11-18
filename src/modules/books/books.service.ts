@@ -56,6 +56,7 @@ export class BooksService {
     if (query.author) filter.authorId = new Types.ObjectId(query.author);
     if (query.series) filter.seriesId = new Types.ObjectId(query.series);
     if (query.isLocked !== undefined) filter.isLocked = query.isLocked === 'true';
+    if (admin && query.status) filter.status = query.status;
     if (query.search) {
       filter.$text = { $search: query.search };
     }
@@ -298,8 +299,9 @@ export class BooksService {
     return { message: 'Book file removed' };
   }
 
-  async searchBooks(q: string, query: BookQueryDto) {
-    return this.findAll({ ...query, search: q });
+  async searchBooks(q: string | undefined, query: BookQueryDto) {
+    const search = (q || query.search || '').trim();
+    return this.findAll({ ...query, search: search || undefined });
   }
 
   private isAvailable(book: Pick<Book, 'status' | 'deletedAt' | 'releaseDate'>) {

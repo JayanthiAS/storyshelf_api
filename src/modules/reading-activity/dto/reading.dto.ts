@@ -27,6 +27,14 @@ export class CreateSessionDto {
   endedAt: string;
 }
 
+export class UpdateSessionDto {
+  @IsNumber()
+  durationSeconds: number;
+
+  @IsDateString()
+  endedAt: string;
+}
+
 export class QueryDto {
   @IsOptional()
   page?: number;

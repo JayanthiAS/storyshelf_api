@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Patch,
   Post,
   Put,
   Delete,
@@ -14,6 +15,7 @@ import { ReadingActivityService } from './reading-activity.service';
 import {
   UpdateProgressDto,
   CreateSessionDto,
+  UpdateSessionDto,
   QueryDto,
 } from './dto/reading.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -54,6 +56,15 @@ export class ReadingActivityController {
     @Body() dto: CreateSessionDto,
   ) {
     return this.readingService.createSession(userId, dto);
+  }
+
+  @Patch('sessions/:id')
+  updateSession(
+    @CurrentUser('sub') userId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateSessionDto,
+  ) {
+    return this.readingService.updateSession(userId, id, dto);
   }
 
   @Get('history')

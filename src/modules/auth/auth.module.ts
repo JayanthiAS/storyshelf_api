@@ -19,6 +19,10 @@ import {
   Subscription,
   SubscriptionSchema,
 } from '../subscriptions/schemas/subscription.schema';
+import {
+  LoginActivity,
+  LoginActivitySchema,
+} from './schemas/login-activity.schema';
 
 @Module({
   imports: [
@@ -37,6 +41,7 @@ import {
       { name: OtpVerification.name, schema: OtpVerificationSchema },
       { name: SubscriptionPlan.name, schema: SubscriptionPlanSchema },
       { name: Subscription.name, schema: SubscriptionSchema },
+      { name: LoginActivity.name, schema: LoginActivitySchema },
     ]),
   ],
   controllers: [AuthController],

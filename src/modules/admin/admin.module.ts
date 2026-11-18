@@ -8,6 +8,14 @@ import {
   Subscription,
   SubscriptionSchema,
 } from '../subscriptions/schemas/subscription.schema';
+import {
+  LoginActivity,
+  LoginActivitySchema,
+} from '../auth/schemas/login-activity.schema';
+import {
+  ReadingSession,
+  ReadingSessionSchema,
+} from '../reading-activity/schemas/reading-session.schema';
 
 @Module({
   imports: [
@@ -15,6 +23,8 @@ import {
       { name: User.name, schema: UserSchema },
       { name: Book.name, schema: BookSchema },
       { name: Subscription.name, schema: SubscriptionSchema },
+      { name: LoginActivity.name, schema: LoginActivitySchema },
+      { name: ReadingSession.name, schema: ReadingSessionSchema },
     ]),
   ],
   controllers: [AdminDashboardController],
