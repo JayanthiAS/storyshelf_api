@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, StreamableFile, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AdminDashboardService } from './admin-dashboard.service';
 import { AnalyticsQueryDto } from './dto/analytics-query.dto';
@@ -13,11 +13,21 @@ import { Role } from '../../common/enums/role.enum';
 @Roles(Role.ADMIN)
 @Controller('admin/dashboard')
 export class AdminDashboardController {
-  constructor(private dashboardService: AdminDashboardService) {}
+  constructor(private dashboardService: AdminDashboardService) { }
 
   @Get('stats')
   getStats() {
     return this.dashboardService.getStats();
+  }
+
+  @Get('analytics/export')
+  async exportAnalytics(@Query() query: AnalyticsQueryDto): Promise<StreamableFile> {
+    const granularity = query.granularity ?? 'month';
+    const csv = await this.dashboardService.exportAnalytics(granularity);
+    return new StreamableFile(Buffer.from(csv), {
+      type: 'text/csv; charset=utf-8',
+      disposition: `attachment; filename="storyshelf-analytics-${granularity}-${new Date().toISOString()}.csv"`,
+    });
   }
 
   @Get('analytics')

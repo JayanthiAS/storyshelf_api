@@ -16,6 +16,14 @@ import {
   ReadingSession,
   ReadingSessionSchema,
 } from '../reading-activity/schemas/reading-session.schema';
+import {
+  ReadingProgress,
+  ReadingProgressSchema,
+} from '../reading-activity/schemas/reading-progress.schema';
+import {
+  PaymentEvent,
+  PaymentEventSchema,
+} from '../subscriptions/schemas/payment-event.schema';
 
 @Module({
   imports: [
@@ -25,6 +33,8 @@ import {
       { name: Subscription.name, schema: SubscriptionSchema },
       { name: LoginActivity.name, schema: LoginActivitySchema },
       { name: ReadingSession.name, schema: ReadingSessionSchema },
+      { name: ReadingProgress.name, schema: ReadingProgressSchema },
+      { name: PaymentEvent.name, schema: PaymentEventSchema },
     ]),
   ],
   controllers: [AdminDashboardController],
