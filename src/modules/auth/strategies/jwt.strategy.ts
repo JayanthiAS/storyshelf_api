@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { User, UserDocument } from '../../users/schemas/user.schema';
+import { Role } from '../../../common/enums/role.enum';
 import type { JwtPayload } from '../../../common/decorators/current-user.decorator';
 
 @Injectable()
@@ -21,6 +22,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload): Promise<JwtPayload> {
+    if (payload.role === Role.GUEST) {
+      return {
+        sub: payload.sub,
+        email: '',
+        role: Role.GUEST,
+        isSuperAdmin: false,
+      };
+    }
+
     const user = await this.userModel.findById(payload.sub);
     if (!user || user.deletedAt || !user.isActive) {
       throw new UnauthorizedException('User not found or inactive');

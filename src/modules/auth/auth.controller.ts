@@ -47,6 +47,12 @@ export class AuthController {
   }
 
   @Public()
+  @Post('guest')
+  guest() {
+    return this.authService.loginAsGuest();
+  }
+
+  @Public()
   @Post('admin/login')
   adminLogin(@Body() dto: LoginDto) {
     return this.authService.login(dto, true);

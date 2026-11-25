@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
+import { randomUUID } from 'crypto';
 import { Model, Types } from 'mongoose';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -83,6 +84,27 @@ export class AuthService {
       7 * 24 * 60 * 60,
     );
     return { accessToken, refreshToken };
+  }
+
+  loginAsGuest() {
+    const sessionId = randomUUID();
+    const payload: JwtPayload = {
+      sub: sessionId,
+      email: '',
+      role: Role.GUEST,
+      isSuperAdmin: false,
+    };
+    return {
+      accessToken: this.jwtService.sign(payload),
+      user: {
+        _id: sessionId,
+        email: '',
+        role: Role.GUEST,
+        isSuperAdmin: false,
+        isEmailVerified: false,
+        isActive: true,
+      },
+    };
   }
 
   private async createOtp(userId: string, type: OtpType) {
