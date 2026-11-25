@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import {
@@ -10,6 +10,10 @@ import {
   ForgotPasswordDto,
   ResetPasswordDto,
 } from './dto/auth.dto';
+import {
+  AcceptPublisherInviteDto,
+  PublisherInviteQueryDto,
+} from '../publishers/dto/publisher.dto';
 import { Public } from '../../common/decorators/public.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import {
@@ -55,7 +59,25 @@ export class AuthController {
   @Public()
   @Post('admin/login')
   adminLogin(@Body() dto: LoginDto) {
-    return this.authService.login(dto, true);
+    return this.authService.login(dto, 'admin');
+  }
+
+  @Public()
+  @Post('publisher/login')
+  publisherLogin(@Body() dto: LoginDto) {
+    return this.authService.login(dto, 'publisher');
+  }
+
+  @Public()
+  @Get('publisher/invite')
+  previewPublisherInvite(@Query() query: PublisherInviteQueryDto) {
+    return this.authService.previewPublisherInvite(query.token);
+  }
+
+  @Public()
+  @Post('publisher/accept-invite')
+  acceptPublisherInvite(@Body() dto: AcceptPublisherInviteDto) {
+    return this.authService.acceptPublisherInvite(dto);
   }
 
   @Public()

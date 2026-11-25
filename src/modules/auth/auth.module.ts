@@ -23,6 +23,7 @@ import {
   LoginActivity,
   LoginActivitySchema,
 } from './schemas/login-activity.schema';
+import { PublishersModule } from '../publishers/publishers.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import {
         },
       }),
     }),
+    PublishersModule,
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: OtpVerification.name, schema: OtpVerificationSchema },

@@ -36,10 +36,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException('User not found or inactive');
     }
     return {
-      sub: payload.sub,
-      email: payload.email,
-      role: payload.role,
-      isSuperAdmin: payload.isSuperAdmin,
+      sub: user._id.toString(),
+      email: user.email,
+      role: user.role,
+      isSuperAdmin: user.isSuperAdmin,
+      organizationId:
+        user.role === Role.PUBLISHER ? payload.organizationId : undefined,
+      orgRole: user.role === Role.PUBLISHER ? payload.orgRole : undefined,
     };
   }
 }

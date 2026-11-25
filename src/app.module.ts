@@ -18,6 +18,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { RecommendationsModule } from './modules/recommendations/recommendations.module';
 import { SearchModule } from './modules/search/search.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { PublishersModule } from './modules/publishers/publishers.module';
 import { HealthModule } from './modules/health/health.module';
 import { WorkersModule } from './workers/workers.module';
 import { SeedModule } from './seed/seed.module';
@@ -53,6 +54,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     RecommendationsModule,
     SearchModule,
     AdminModule,
+    PublishersModule,
     HealthModule,
     WorkersModule,
     SeedModule,

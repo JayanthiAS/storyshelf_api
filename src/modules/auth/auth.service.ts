@@ -42,6 +42,8 @@ import { RedisService } from '../../common/services/redis.service';
 import { JwtPayload } from '../../common/decorators/current-user.decorator';
 import { RabbitMQService, QUEUES } from '../../common/services/rabbitmq.service';
 import { NotificationType } from '../../common/enums/notification-type.enum';
+import { PublishersService } from '../publishers/publishers.service';
+import { AcceptPublisherInviteDto } from '../publishers/dto/publisher.dto';
 
 @Injectable()
 export class AuthService {
@@ -59,6 +61,7 @@ export class AuthService {
     private configService: ConfigService,
     private redisService: RedisService,
     private rabbitMQService: RabbitMQService,
+    private publishersService: PublishersService,
   ) {}
 
   private sanitizeUser(user: UserDocument) {
@@ -74,6 +77,15 @@ export class AuthService {
       role: user.role,
       isSuperAdmin: user.isSuperAdmin,
     };
+    if (user.role === Role.PUBLISHER) {
+      const membership = await this.publishersService.getActiveMembership(
+        user._id.toString(),
+      );
+      if (membership) {
+        payload.organizationId = membership.organizationId.toString();
+        payload.orgRole = membership.orgRole;
+      }
+    }
     const accessToken = this.jwtService.sign(payload);
     const refreshToken = this.jwtService.sign(payload, {
       expiresIn: this.configService.get('JWT_REFRESH_EXPIRES', '7d'),
@@ -242,8 +254,10 @@ export class AuthService {
     };
   }
 
-  async login(dto: LoginDto, adminOnly = false) {
-    const user = await this.userModel.findOne({ email: dto.email });
+  async login(dto: LoginDto, mode: 'user' | 'admin' | 'publisher' = 'user') {
+    const user = await this.userModel.findOne({
+      email: dto.email.trim().toLowerCase(),
+    });
     if (!user || user.deletedAt) {
       throw new UnauthorizedException('Invalid credentials');
     }
@@ -256,8 +270,14 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    if (adminOnly && user.role !== Role.ADMIN) {
+    if (mode === 'admin' && user.role !== Role.ADMIN) {
       throw new UnauthorizedException('Admin access required');
+    }
+    if (mode === 'publisher' && user.role !== Role.PUBLISHER) {
+      throw new UnauthorizedException('Publisher access required');
+    }
+    if (mode === 'user' && user.role === Role.PUBLISHER) {
+      throw new UnauthorizedException('Use the publisher sign-in');
     }
 
     const loggedInAt = new Date();
@@ -298,7 +318,9 @@ export class AuthService {
   }
 
   async forgotPassword(email: string) {
-    const user = await this.userModel.findOne({ email });
+    const user = await this.userModel.findOne({
+      email: email.trim().toLowerCase(),
+    });
     if (!user) {
       return { message: 'If the email exists, an OTP has been sent' };
     }
@@ -307,7 +329,9 @@ export class AuthService {
   }
 
   async resetPassword(dto: ResetPasswordDto) {
-    const user = await this.userModel.findOne({ email: dto.email });
+    const user = await this.userModel.findOne({
+      email: dto.email.trim().toLowerCase(),
+    });
     if (!user) {
       throw new NotFoundException('User not found');
     }
@@ -331,6 +355,20 @@ export class AuthService {
     await this.redisService.del(`refresh:${user._id.toString()}`);
 
     return { message: 'Password reset successfully' };
+  }
+
+  async acceptPublisherInvite(dto: AcceptPublisherInviteDto) {
+    const user = await this.publishersService.acceptInvite(dto);
+    const tokens = await this.generateTokens(user);
+    return {
+      user: this.sanitizeUser(user),
+      ...tokens,
+      message: 'Publisher account ready.',
+    };
+  }
+
+  previewPublisherInvite(token: string) {
+    return this.publishersService.previewInvite(token);
   }
 
   async getMe(userId: string) {
