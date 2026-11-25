@@ -19,7 +19,11 @@ import {
   QueryDto,
 } from './dto/reading.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import {
+  CurrentUser,
+  type JwtPayload,
+} from '../../common/decorators/current-user.decorator';
+import { Role } from '../../common/enums/role.enum';
 
 @ApiTags('reading')
 @ApiBearerAuth()
@@ -29,47 +33,55 @@ export class ReadingActivityController {
   constructor(private readingService: ReadingActivityService) {}
 
   @Get('progress')
-  getAllProgress(@CurrentUser('sub') userId: string) {
-    return this.readingService.getAllProgress(userId);
+  getAllProgress(@CurrentUser() user: JwtPayload) {
+    if (user.role === Role.GUEST) return [];
+    return this.readingService.getAllProgress(user.sub);
   }
 
   @Get('progress/:bookId')
   getProgress(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser() user: JwtPayload,
     @Param('bookId') bookId: string,
   ) {
-    return this.readingService.getProgress(userId, bookId);
+    if (user.role === Role.GUEST) return null;
+    return this.readingService.getProgress(user.sub, bookId);
   }
 
   @Put('progress/:bookId')
   updateProgress(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser() user: JwtPayload,
     @Param('bookId') bookId: string,
     @Body() dto: UpdateProgressDto,
   ) {
-    return this.readingService.updateProgress(userId, bookId, dto);
+    if (user.role === Role.GUEST) return { ...dto, stored: false };
+    return this.readingService.updateProgress(user.sub, bookId, dto);
   }
 
   @Post('sessions')
   createSession(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser() user: JwtPayload,
     @Body() dto: CreateSessionDto,
   ) {
-    return this.readingService.createSession(userId, dto);
+    if (user.role === Role.GUEST) return { stored: false };
+    return this.readingService.createSession(user.sub, dto);
   }
 
   @Patch('sessions/:id')
   updateSession(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser() user: JwtPayload,
     @Param('id') id: string,
     @Body() dto: UpdateSessionDto,
   ) {
-    return this.readingService.updateSession(userId, id, dto);
+    if (user.role === Role.GUEST) return { stored: false };
+    return this.readingService.updateSession(user.sub, id, dto);
   }
 
   @Get('history')
-  getHistory(@CurrentUser('sub') userId: string, @Query() query: QueryDto) {
-    return this.readingService.getHistory(userId, query);
+  getHistory(@CurrentUser() user: JwtPayload, @Query() query: QueryDto) {
+    if (user.role === Role.GUEST) {
+      return { data: [], meta: { total: 0, page: 1, limit: 20, totalPages: 1 } };
+    }
+    return this.readingService.getHistory(user.sub, query);
   }
 }
 
@@ -81,23 +93,28 @@ export class LikesController {
   constructor(private readingService: ReadingActivityService) {}
 
   @Get()
-  getLikes(@CurrentUser('sub') userId: string, @Query() query: QueryDto) {
-    return this.readingService.getLikes(userId, query);
+  getLikes(@CurrentUser() user: JwtPayload, @Query() query: QueryDto) {
+    if (user.role === Role.GUEST) {
+      return { data: [], meta: { total: 0, page: 1, limit: 20, totalPages: 1 } };
+    }
+    return this.readingService.getLikes(user.sub, query);
   }
 
   @Post(':bookId')
   likeBook(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser() user: JwtPayload,
     @Param('bookId') bookId: string,
   ) {
-    return this.readingService.likeBook(userId, bookId);
+    if (user.role === Role.GUEST) return { stored: false };
+    return this.readingService.likeBook(user.sub, bookId);
   }
 
   @Delete(':bookId')
   unlikeBook(
-    @CurrentUser('sub') userId: string,
+    @CurrentUser() user: JwtPayload,
     @Param('bookId') bookId: string,
   ) {
-    return this.readingService.unlikeBook(userId, bookId);
+    if (user.role === Role.GUEST) return { stored: false };
+    return this.readingService.unlikeBook(user.sub, bookId);
   }
 }
