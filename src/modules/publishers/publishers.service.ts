@@ -349,6 +349,33 @@ export class PublishersService {
     return this.getSession(userId);
   }
 
+  async requireStaff(userId: string, write: boolean, ownerOnly = false) {
+    const membership = await this.getActiveMembership(userId);
+    if (!membership) {
+      throw new ForbiddenException('You are not a member of a publishing house.');
+    }
+    const organization = await this.organizationModel.findOne({
+      _id: membership.organizationId,
+      deletedAt: null,
+    });
+    if (!organization) {
+      throw new NotFoundException('Publisher house not found');
+    }
+    if (ownerOnly && membership.orgRole !== OrgRole.OWNER) {
+      throw new ForbiddenException('Only the house owner can do this.');
+    }
+    if (write && membership.orgRole === OrgRole.VIEWER) {
+      throw new ForbiddenException('Viewers cannot change books.');
+    }
+    if (write && organization.status === OrganizationStatus.SUSPENDED) {
+      throw new ForbiddenException({
+        message: 'This house is suspended. Changes are paused.',
+        code: 'ORG_SUSPENDED',
+      });
+    }
+    return { membership, organization };
+  }
+
   private async requireOwnerContext(userId: string) {
     const membership = await this.getActiveMembership(userId);
     if (!membership || membership.orgRole !== OrgRole.OWNER) {

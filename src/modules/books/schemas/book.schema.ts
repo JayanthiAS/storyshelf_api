@@ -1,6 +1,7 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document, Types } from 'mongoose';
 import { BookStatus } from '../../../common/enums/book-status.enum';
+import { SubmissionStatus } from '../../../common/enums/submission-status.enum';
 
 export type BookDocument = Book & Document;
 
@@ -57,6 +58,45 @@ export class Book {
   @Prop({ type: String, enum: BookStatus, default: BookStatus.DRAFT })
   status: BookStatus;
 
+  @Prop({ type: Types.ObjectId, ref: 'Organization', default: null })
+  organizationId: Types.ObjectId | null;
+
+  @Prop({ type: String, enum: Object.values(SubmissionStatus), default: undefined })
+  submissionStatus?: SubmissionStatus;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', default: null })
+  submittedBy: Types.ObjectId | null;
+
+  @Prop({ type: Date, default: null })
+  submittedAt: Date | null;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', default: null })
+  reviewedBy: Types.ObjectId | null;
+
+  @Prop({ type: String, default: null })
+  reviewNote: string | null;
+
+  @Prop({ type: Date, default: null })
+  reviewedAt: Date | null;
+
+  @Prop({ type: String, default: null })
+  isbn: string | null;
+
+  @Prop({ default: '' })
+  language: string;
+
+  @Prop({ default: '' })
+  imprint: string;
+
+  @Prop({ type: Number, default: 1 })
+  version: number;
+
+  @Prop({ type: Date, default: null })
+  takedownRequestedAt: Date | null;
+
+  @Prop({ type: Date, default: null })
+  takenDownAt: Date | null;
+
   @Prop({ default: false })
   isFeatured: boolean;
 
@@ -67,3 +107,5 @@ export class Book {
 export const BookSchema = SchemaFactory.createForClass(Book);
 BookSchema.index({ title: 'text', description: 'text' });
 BookSchema.index({ status: 1, deletedAt: 1, releaseDate: 1 });
+BookSchema.index({ organizationId: 1, submissionStatus: 1 });
+BookSchema.index({ isbn: 1 }, { unique: true, sparse: true });

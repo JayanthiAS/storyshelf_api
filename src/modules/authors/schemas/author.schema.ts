@@ -14,6 +14,9 @@ export class Author {
   @Prop({ type: String, default: null })
   profileImageUrl: string | null;
 
+  @Prop({ type: Types.ObjectId, ref: 'Organization', default: null })
+  organizationId: Types.ObjectId | null;
+
   @Prop({ type: Date, default: null })
   deletedAt: Date | null;
 }

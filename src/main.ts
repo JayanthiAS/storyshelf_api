@@ -35,7 +35,9 @@ async function bootstrap() {
     }),
   );
 
-  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads' });
+  app.useStaticAssets(join(process.cwd(), 'uploads', 'covers'), {
+    prefix: '/uploads/covers',
+  });
 
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Storyshelf API')

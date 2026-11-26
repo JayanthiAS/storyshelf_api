@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { createReadStream } from 'fs';
+import { createReadStream, existsSync } from 'fs';
 import { Book, BookDocument } from './schemas/book.schema';
 import {
   CreateBookDto,
@@ -186,8 +186,25 @@ export class BooksService {
   async getContent(id: string, user?: JwtPayload, admin = false) {
     const book = await this.bookModel.findById(id);
     if (!book || book.deletedAt) throw new NotFoundException('Book not found');
+    if (!admin && book.status !== BookStatus.PUBLISHED) {
+      if (book.takenDownAt) {
+        throw new ForbiddenException({
+          message: 'This book is no longer available.',
+          code: 'BOOK_UNAVAILABLE',
+        });
+      }
+      throw new NotFoundException('Book not found');
+    }
     await this.checkAccess(book, user, admin);
-    if (!book.fileKey) throw new NotFoundException('Book file not available');
+    if (!book.fileKey || !existsSync(this.storageService.getAbsolutePath(book.fileKey))) {
+      if (book.takenDownAt) {
+        throw new ForbiddenException({
+          message: 'This book is no longer available.',
+          code: 'BOOK_UNAVAILABLE',
+        });
+      }
+      throw new NotFoundException('Book file not available');
+    }
     const path = this.storageService.getAbsolutePath(book.fileKey);
     const stream = createReadStream(path);
     return new StreamableFile(stream, {
@@ -268,6 +285,7 @@ export class BooksService {
   async uploadFile(id: string, file: Express.Multer.File) {
     const book = await this.bookModel.findOne({ _id: id, deletedAt: null });
     if (!book) throw new NotFoundException('Book not found');
+    this.storageService.assert(file, 'book');
     if (book.fileKey) await this.storageService.delete(book.fileKey);
     const result = await this.storageService.upload(file, 'books');
     book.fileUrl = result.url;
@@ -281,6 +299,7 @@ export class BooksService {
   async uploadCover(id: string, file: Express.Multer.File) {
     const book = await this.bookModel.findOne({ _id: id, deletedAt: null });
     if (!book) throw new NotFoundException('Book not found');
+    this.storageService.assert(file, 'cover');
     const result = await this.storageService.upload(file, 'covers');
     book.coverImageUrl = result.url;
     await book.save();
