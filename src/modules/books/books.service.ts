@@ -1,7 +1,9 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ForbiddenException,
+  OnModuleInit,
   StreamableFile,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -27,7 +29,9 @@ import { RabbitMQService, QUEUES } from '../../common/services/rabbitmq.service'
 import { RedisService } from '../../common/services/redis.service';
 
 @Injectable()
-export class BooksService {
+export class BooksService implements OnModuleInit {
+  private readonly logger = new Logger(BooksService.name);
+
   constructor(
     @InjectModel(Book.name) private bookModel: Model<BookDocument>,
     private storageService: StorageService,
@@ -35,6 +39,22 @@ export class BooksService {
     private rabbitMQService: RabbitMQService,
     private redisService: RedisService,
   ) {}
+
+  async onModuleInit() {
+    try {
+      const indexes = await this.bookModel.collection.indexes();
+      const text = indexes.find((index) =>
+        Object.values(index.key ?? {}).some((value) => value === 'text'),
+      );
+      if (text?.name && text.language_override !== 'textLanguage') {
+        await this.bookModel.collection.dropIndex(text.name);
+        await this.bookModel.createIndexes();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not refresh the book text index';
+      this.logger.warn(message);
+    }
+  }
 
   private publishedFilter(includeUnreleased = false) {
     const now = new Date();

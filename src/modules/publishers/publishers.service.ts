@@ -24,8 +24,10 @@ import { User, UserDocument } from '../users/schemas/user.schema';
 import {
   AcceptPublisherInviteDto,
   CreatePublisherHouseDto,
+  InviteStaffDto,
   PublisherListQueryDto,
   UpdatePublisherOrganizationDto,
+  UpdateStaffRoleDto,
 } from './dto/publisher.dto';
 import {
   COMPLIMENTARY_TERMS_TEXT,
@@ -217,6 +219,7 @@ export class PublishersService {
       email: invite.email,
       displayName: organization.displayName,
       legalName: organization.legalName,
+      orgRole: invite.orgRole,
       expiresAt: invite.expiresAt,
       termsVersion: COMPLIMENTARY_TERMS_VERSION,
       termsText: COMPLIMENTARY_TERMS_TEXT,
@@ -227,49 +230,86 @@ export class PublishersService {
     const invite = await this.requirePendingInvite(dto.token);
     const organization = await this.requireHouse(invite.organizationId.toString());
     this.assertHouseCanAccept(organization);
-    await this.assertEmailAvailable(invite.email);
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
-    let user: UserDocument;
-    try {
-      user = await this.userModel.create({
-        email: invite.email,
-        passwordHash,
-        firstName: invite.firstName,
-        lastName: invite.lastName,
-        role: Role.PUBLISHER,
-        isEmailVerified: true,
-        isActive: true,
+    const existing = await this.userModel.findOne({ email: invite.email });
+    if (existing && (existing.role !== Role.PUBLISHER || existing.deletedAt)) {
+      throw new ConflictException(EMAIL_IN_USE);
+    }
+
+    let user = existing;
+    let created = false;
+    if (!user) {
+      try {
+        user = await this.userModel.create({
+          email: invite.email,
+          passwordHash,
+          firstName: invite.firstName,
+          lastName: invite.lastName,
+          role: Role.PUBLISHER,
+          isEmailVerified: true,
+          isActive: true,
+        });
+        created = true;
+      } catch (error) {
+        if (this.isDuplicateKey(error)) {
+          throw new ConflictException(EMAIL_IN_USE);
+        }
+        throw error;
+      }
+    } else {
+      const activeElsewhere = await this.membershipModel.findOne({
+        userId: user._id,
+        status: MembershipStatus.ACTIVE,
+        organizationId: { $ne: organization._id },
       });
-    } catch (error) {
-      if (this.isDuplicateKey(error)) {
+      if (activeElsewhere) {
         throw new ConflictException(EMAIL_IN_USE);
       }
-      throw error;
+      user.passwordHash = passwordHash;
+      user.firstName = invite.firstName;
+      user.lastName = invite.lastName;
+      user.isEmailVerified = true;
+      user.isActive = true;
+      await user.save();
     }
 
     try {
-      await this.membershipModel.create({
+      const membership = await this.membershipModel.findOne({
         userId: user._id,
         organizationId: organization._id,
-        orgRole: invite.orgRole,
-        status: MembershipStatus.ACTIVE,
       });
-      await this.agreementModel.updateOne(
-        {
+      if (membership) {
+        membership.orgRole = invite.orgRole;
+        membership.status = MembershipStatus.ACTIVE;
+        await membership.save();
+      } else {
+        await this.membershipModel.create({
+          userId: user._id,
           organizationId: organization._id,
-          termsVersion: COMPLIMENTARY_TERMS_VERSION,
-        },
-        { acceptedBy: user._id, acceptedAt: new Date() },
-      );
-      organization.status = OrganizationStatus.ACTIVE;
-      await organization.save();
+          orgRole: invite.orgRole,
+          status: MembershipStatus.ACTIVE,
+        });
+      }
+      if (invite.orgRole === OrgRole.OWNER) {
+        await this.agreementModel.updateOne(
+          {
+            organizationId: organization._id,
+            termsVersion: COMPLIMENTARY_TERMS_VERSION,
+          },
+          { acceptedBy: user._id, acceptedAt: new Date() },
+        );
+        organization.status = OrganizationStatus.ACTIVE;
+        await organization.save();
+      }
       invite.status = InviteStatus.ACCEPTED;
       invite.acceptedAt = new Date();
       await invite.save();
     } catch (error) {
-      await this.userModel.deleteOne({ _id: user._id });
-      await this.membershipModel.deleteOne({ userId: user._id });
+      if (created) {
+        await this.userModel.deleteOne({ _id: user._id });
+        await this.membershipModel.deleteOne({ userId: user._id });
+      }
       throw error;
     }
 
@@ -349,6 +389,137 @@ export class PublishersService {
     return this.getSession(userId);
   }
 
+  async listStaff(userId: string) {
+    const { organization } = await this.requireStaff(userId, false);
+    const members = await this.membershipModel
+      .find({
+        organizationId: organization._id,
+        status: MembershipStatus.ACTIVE,
+      })
+      .sort({ createdAt: 1 });
+    const users = await this.userModel.find({
+      _id: { $in: members.map((member) => member.userId) },
+    });
+    const usersById = new Map(users.map((user) => [user._id.toString(), user]));
+    const invites = await this.inviteModel
+      .find({
+        organizationId: organization._id,
+        status: InviteStatus.PENDING,
+        expiresAt: { $gt: new Date() },
+        orgRole: { $in: [OrgRole.EDITOR, OrgRole.VIEWER] },
+      })
+      .sort({ createdAt: -1 });
+
+    return {
+      members: members.map((member) => {
+        const user = usersById.get(member.userId.toString());
+        return {
+          _id: member._id,
+          email: user?.email ?? '',
+          firstName: user?.firstName ?? '',
+          lastName: user?.lastName ?? '',
+          orgRole: member.orgRole,
+          status: member.status,
+        };
+      }),
+      invites: invites.map((invite) => ({
+        _id: invite._id,
+        email: invite.email,
+        firstName: invite.firstName,
+        lastName: invite.lastName,
+        orgRole: invite.orgRole,
+        expiresAt: invite.expiresAt,
+      })),
+    };
+  }
+
+  async inviteStaff(userId: string, dto: InviteStaffDto) {
+    const { organization, membership } = await this.requireStaff(userId, true, true);
+    const agreement = await this.agreementModel.findOne({
+      organizationId: organization._id,
+      termsVersion: COMPLIMENTARY_TERMS_VERSION,
+    });
+    if (!agreement?.acceptedAt) {
+      throw new BadRequestException(
+        'The house owner must accept the terms before inviting staff.',
+      );
+    }
+    const email = dto.email.trim().toLowerCase();
+    await this.assertStaffEmail(email, organization._id);
+    const invite = await this.issueInvite({
+      organizationId: organization._id,
+      email,
+      firstName: dto.firstName.trim(),
+      lastName: dto.lastName.trim(),
+      orgRole: dto.orgRole,
+      invitedBy: membership.userId,
+    });
+    return {
+      inviteUrl: invite.inviteUrl,
+      expiresAt: invite.expiresAt,
+      email,
+      orgRole: dto.orgRole,
+    };
+  }
+
+  async updateStaffRole(userId: string, membershipId: string, dto: UpdateStaffRoleDto) {
+    const { organization } = await this.requireStaff(userId, true, true);
+    const membership = await this.requireOrgMembership(membershipId, organization._id);
+    if (membership.orgRole === OrgRole.OWNER) {
+      throw new BadRequestException('The owner role cannot be changed from the team page.');
+    }
+    membership.orgRole = dto.orgRole;
+    await membership.save();
+    return { _id: membership._id, orgRole: membership.orgRole };
+  }
+
+  async removeStaff(userId: string, membershipId: string) {
+    const { organization } = await this.requireStaff(userId, true, true);
+    const membership = await this.requireOrgMembership(membershipId, organization._id);
+    if (membership.orgRole === OrgRole.OWNER) {
+      const owners = await this.membershipModel.countDocuments({
+        organizationId: organization._id,
+        orgRole: OrgRole.OWNER,
+        status: MembershipStatus.ACTIVE,
+      });
+      if (owners <= 1) {
+        throw new BadRequestException('The last owner cannot be removed.');
+      }
+    }
+    membership.status = MembershipStatus.REVOKED;
+    await membership.save();
+    return { removed: true };
+  }
+
+  async resendStaffInvite(userId: string, inviteId: string) {
+    const { organization, membership } = await this.requireStaff(userId, true, true);
+    const invite = await this.requireStaffInvite(inviteId, organization._id);
+    await this.assertStaffEmail(invite.email, organization._id, invite._id.toString());
+    invite.status = InviteStatus.REVOKED;
+    await invite.save();
+    const next = await this.issueInvite({
+      organizationId: organization._id,
+      email: invite.email,
+      firstName: invite.firstName,
+      lastName: invite.lastName,
+      orgRole: invite.orgRole,
+      invitedBy: membership.userId,
+    });
+    return {
+      inviteUrl: next.inviteUrl,
+      expiresAt: next.expiresAt,
+      email: invite.email,
+    };
+  }
+
+  async revokeStaffInvite(userId: string, inviteId: string) {
+    const { organization } = await this.requireStaff(userId, true, true);
+    const invite = await this.requireStaffInvite(inviteId, organization._id);
+    invite.status = InviteStatus.REVOKED;
+    await invite.save();
+    return { revoked: true };
+  }
+
   async requireStaff(userId: string, write: boolean, ownerOnly = false) {
     const membership = await this.getActiveMembership(userId);
     if (!membership) {
@@ -410,6 +581,75 @@ export class PublishersService {
         code: 'EMAIL_IN_USE',
       });
     }
+  }
+
+  private async assertStaffEmail(
+    email: string,
+    organizationId: Types.ObjectId,
+    ignoreInviteId?: string,
+  ) {
+    const pending = await this.inviteModel.findOne({
+      email,
+      status: InviteStatus.PENDING,
+      expiresAt: { $gt: new Date() },
+      ...(ignoreInviteId ? { _id: { $ne: ignoreInviteId } } : {}),
+    });
+    if (pending) {
+      throw new ConflictException({
+        message: 'An invite is already pending for this email.',
+        code: 'EMAIL_IN_USE',
+      });
+    }
+    const existing = await this.userModel.findOne({ email });
+    if (!existing) return;
+    if (existing.role !== Role.PUBLISHER || existing.deletedAt) {
+      throw new ConflictException(EMAIL_IN_USE);
+    }
+    const memberships = await this.membershipModel.find({ userId: existing._id });
+    const here = memberships.find(
+      (membership) => membership.organizationId.toString() === organizationId.toString(),
+    );
+    if (here?.status === MembershipStatus.ACTIVE) {
+      throw new ConflictException({
+        message: 'This person is already on the team.',
+        code: 'EMAIL_IN_USE',
+      });
+    }
+    const elsewhere = memberships.some(
+      (membership) =>
+        membership.status === MembershipStatus.ACTIVE &&
+        membership.organizationId.toString() !== organizationId.toString(),
+    );
+    if (elsewhere) {
+      throw new ConflictException(EMAIL_IN_USE);
+    }
+  }
+
+  private async requireOrgMembership(membershipId: string, organizationId: Types.ObjectId) {
+    if (!Types.ObjectId.isValid(membershipId)) {
+      throw new NotFoundException('Team member not found');
+    }
+    const membership = await this.membershipModel.findOne({
+      _id: membershipId,
+      organizationId,
+      status: MembershipStatus.ACTIVE,
+    });
+    if (!membership) throw new NotFoundException('Team member not found');
+    return membership;
+  }
+
+  private async requireStaffInvite(inviteId: string, organizationId: Types.ObjectId) {
+    if (!Types.ObjectId.isValid(inviteId)) {
+      throw new NotFoundException('Invite not found');
+    }
+    const invite = await this.inviteModel.findOne({
+      _id: inviteId,
+      organizationId,
+      status: InviteStatus.PENDING,
+      orgRole: { $in: [OrgRole.EDITOR, OrgRole.VIEWER] },
+    });
+    if (!invite) throw new NotFoundException('Invite not found');
+    return invite;
   }
 
   private async issueInvite(input: {

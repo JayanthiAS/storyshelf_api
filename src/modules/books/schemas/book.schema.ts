@@ -105,7 +105,10 @@ export class Book {
 }
 
 export const BookSchema = SchemaFactory.createForClass(Book);
-BookSchema.index({ title: 'text', description: 'text' });
+BookSchema.index(
+  { title: 'text', description: 'text' },
+  { default_language: 'english', language_override: 'textLanguage' },
+);
 BookSchema.index({ status: 1, deletedAt: 1, releaseDate: 1 });
 BookSchema.index({ organizationId: 1, submissionStatus: 1 });
 BookSchema.index({ isbn: 1 }, { unique: true, sparse: true });

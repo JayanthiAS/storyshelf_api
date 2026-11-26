@@ -4,6 +4,7 @@ import {
   Equals,
   IsBoolean,
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -11,6 +12,7 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import { OrgRole } from '../../../common/enums/org-role.enum';
 
 export class CreatePublisherHouseDto {
   @ApiProperty()
@@ -113,4 +115,34 @@ export class PublisherListQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+}
+
+const STAFF_ROLES = [OrgRole.EDITOR, OrgRole.VIEWER];
+
+export class InviteStaffDto {
+  @ApiProperty()
+  @IsEmail()
+  email: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  firstName: string;
+
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(80)
+  lastName: string;
+
+  @ApiProperty({ enum: STAFF_ROLES })
+  @IsIn(STAFF_ROLES)
+  orgRole: OrgRole;
+}
+
+export class UpdateStaffRoleDto {
+  @ApiProperty({ enum: STAFF_ROLES })
+  @IsIn(STAFF_ROLES)
+  orgRole: OrgRole;
 }

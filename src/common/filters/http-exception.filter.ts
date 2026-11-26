@@ -27,6 +27,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
         message = (resp.message as string) || message;
         code = resp.code as string | undefined;
       }
+    } else if (exception instanceof Error) {
+      const exact = exception.message.match(/language override unsupported:\s*\S+/i);
+      if (exact) {
+        status = HttpStatus.BAD_REQUEST;
+        message = exact[0];
+      }
     }
 
     response.status(status).json({
