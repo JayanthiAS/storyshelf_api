@@ -148,6 +148,38 @@ export class NotificationsService {
     return docs.length;
   }
 
+  async notifyUsers(
+    userIds: string[],
+    payload: {
+      type: NotificationType;
+      title: string;
+      body: string;
+      metadata?: Record<string, string>;
+    },
+  ) {
+    const unique = [...new Set(userIds.filter((id) => Types.ObjectId.isValid(id)))];
+    if (!unique.length) return 0;
+    const users = await this.userModel
+      .find({
+        _id: { $in: unique.map((id) => new Types.ObjectId(id)) },
+        deletedAt: null,
+        isActive: true,
+      })
+      .select('_id');
+    if (!users.length) return 0;
+    await this.notificationModel.insertMany(
+      users.map((user) => ({
+        userId: user._id,
+        type: payload.type,
+        title: payload.title,
+        body: payload.body,
+        metadata: payload.metadata ?? {},
+        isRead: false,
+      })),
+    );
+    return users.length;
+  }
+
   async createFromQueue(payload: Record<string, unknown>) {
     return this.notificationModel.create({
       userId: new Types.ObjectId(payload.userId as string),

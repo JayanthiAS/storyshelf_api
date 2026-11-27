@@ -3,4 +3,5 @@ export enum NotificationType {
   SYSTEM = 'system',
   SUBSCRIPTION = 'subscription',
   RELEASE = 'release',
+  PUBLISHER = 'publisher',
 }

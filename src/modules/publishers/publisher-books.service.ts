@@ -13,7 +13,9 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { BookStatus } from '../../common/enums/book-status.enum';
 import { SubmissionStatus } from '../../common/enums/submission-status.enum';
+import { NotificationType } from '../../common/enums/notification-type.enum';
 import { RabbitMQService, QUEUES } from '../../common/services/rabbitmq.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { RedisService } from '../../common/services/redis.service';
 import { toSlug } from '../../common/utils/helpers.util';
 import { Author, AuthorDocument } from '../authors/schemas/author.schema';
@@ -41,6 +43,7 @@ export class PublisherBooksService {
     private storageService: StorageService,
     private redisService: RedisService,
     private rabbitMQService: RabbitMQService,
+    private notificationsService: NotificationsService,
   ) {}
 
   async listForHouse(userId: string) {
@@ -251,6 +254,10 @@ export class PublisherBooksService {
       });
     }
     await this.redisService.delByPattern('books:recent:*');
+    const when = book.releaseDate && book.releaseDate > new Date()
+      ? ` It stays hidden until ${book.releaseDate.toISOString().slice(0, 10)}.`
+      : '';
+    await this.tellHouse(book, 'Book approved', `${book.title} is on the shelf.${when}`);
     return this.present(book);
   }
 
@@ -264,6 +271,11 @@ export class PublisherBooksService {
     book.reviewedBy = new Types.ObjectId(reviewerId);
     book.reviewedAt = new Date();
     await book.save();
+    await this.tellHouse(
+      book,
+      'Changes requested',
+      `${book.title} needs changes. ${this.plain(note, 240)}`,
+    );
     return this.present(book);
   }
 
@@ -282,6 +294,11 @@ export class PublisherBooksService {
     book.reviewedBy = new Types.ObjectId(reviewerId);
     book.reviewedAt = new Date();
     await book.save();
+    await this.tellHouse(
+      book,
+      'Book not accepted',
+      `${book.title} was not accepted. ${this.plain(note, 240)}`,
+    );
     return this.present(book);
   }
 
@@ -297,6 +314,7 @@ export class PublisherBooksService {
     book.reviewedAt = new Date();
     await book.save();
     await this.redisService.delByPattern('books:recent:*');
+    await this.tellHouse(book, 'Book taken down', `${book.title} is no longer on the shelf.`);
     return this.present(book);
   }
 
@@ -342,6 +360,19 @@ export class PublisherBooksService {
     book.version += 1;
     await book.save();
     return this.present(book);
+  }
+
+  private async tellHouse(book: BookDocument, title: string, body: string) {
+    if (!book.organizationId) return;
+    await this.notificationsService.notifyUsers(
+      await this.publishersService.activeMemberIds(book.organizationId),
+      {
+        type: NotificationType.PUBLISHER,
+        title,
+        body,
+        metadata: { bookId: book._id.toString() },
+      },
+    );
   }
 
   private assertEditable(book: BookDocument) {

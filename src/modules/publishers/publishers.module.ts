@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { BooksModule } from '../books/books.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { Author, AuthorSchema } from '../authors/schemas/author.schema';
 import { Genre, GenreSchema } from '../genres/schemas/genre.schema';
 import { AdminPublishersController } from './admin-publishers.controller';
@@ -32,6 +33,7 @@ import {
 @Module({
   imports: [
     BooksModule,
+    NotificationsModule,
     MongooseModule.forFeature([
       { name: Organization.name, schema: OrganizationSchema },
       { name: PublisherMembership.name, schema: PublisherMembershipSchema },

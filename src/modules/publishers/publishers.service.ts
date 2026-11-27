@@ -14,12 +14,15 @@ import { InviteStatus } from '../../common/enums/invite-status.enum';
 import { MembershipStatus } from '../../common/enums/membership-status.enum';
 import { OrgRole } from '../../common/enums/org-role.enum';
 import { OrganizationStatus } from '../../common/enums/organization-status.enum';
+import { BookStatus } from '../../common/enums/book-status.enum';
 import { Role } from '../../common/enums/role.enum';
+import { SubmissionStatus } from '../../common/enums/submission-status.enum';
 import { toSlug } from '../../common/utils/helpers.util';
 import {
   buildPaginatedResult,
   parsePagination,
 } from '../../common/utils/pagination.util';
+import { Book, BookDocument } from '../books/schemas/book.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import {
   AcceptPublisherInviteDto,
@@ -74,6 +77,7 @@ export class PublishersService {
     @InjectModel(PublisherInvite.name)
     private inviteModel: Model<PublisherInviteDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel(Book.name) private bookModel: Model<BookDocument>,
     private configService: ConfigService,
   ) {}
 
@@ -356,6 +360,19 @@ export class PublishersService {
       organizationId: organization._id,
       termsVersion: COMPLIMENTARY_TERMS_VERSION,
     });
+    const houseBooks = { organizationId: organization._id, deletedAt: null };
+    const [inReview, live, anyBook] = await Promise.all([
+      this.bookModel.countDocuments({
+        ...houseBooks,
+        submissionStatus: SubmissionStatus.SUBMITTED,
+      }),
+      this.bookModel.countDocuments({
+        ...houseBooks,
+        status: BookStatus.PUBLISHED,
+        takenDownAt: null,
+      }),
+      this.bookModel.exists(houseBooks),
+    ]);
     return {
       user: this.publicUser(user),
       organization: this.publicOrganization(organization),
@@ -364,8 +381,21 @@ export class PublishersService {
         status: membership.status,
       },
       agreement: agreement ? this.publicAgreement(agreement) : null,
-      checklist: this.checklist(!!agreement?.acceptedAt, !!organization.website),
+      checklist: this.checklist(
+        !!agreement?.acceptedAt,
+        !!organization.website,
+        !!anyBook,
+        inReview,
+        live,
+      ),
     };
+  }
+
+  async activeMemberIds(organizationId: Types.ObjectId) {
+    const members = await this.membershipModel
+      .find({ organizationId, status: MembershipStatus.ACTIVE })
+      .select('userId');
+    return members.map((member) => member.userId.toString());
   }
 
   async updateOrganization(userId: string, dto: UpdatePublisherOrganizationDto) {
@@ -785,11 +815,19 @@ export class PublishersService {
     };
   }
 
-  private checklist(termsAccepted: boolean, profileReady: boolean) {
+  private checklist(
+    termsAccepted: boolean,
+    profileReady: boolean,
+    booksReady = false,
+    inReview = 0,
+    live = 0,
+  ) {
     return {
       termsAccepted,
       profileReady,
-      booksReady: false,
+      booksReady,
+      inReview,
+      live,
     };
   }
 
