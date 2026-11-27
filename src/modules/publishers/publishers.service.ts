@@ -23,6 +23,7 @@ import {
   parsePagination,
 } from '../../common/utils/pagination.util';
 import { Book, BookDocument } from '../books/schemas/book.schema';
+import { StorageService } from '../uploads/storage.service';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import {
   AcceptPublisherInviteDto,
@@ -79,6 +80,7 @@ export class PublishersService {
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     @InjectModel(Book.name) private bookModel: Model<BookDocument>,
     private configService: ConfigService,
+    private storageService: StorageService,
   ) {}
 
   async createHouse(dto: CreatePublisherHouseDto, adminId: string) {
@@ -387,6 +389,7 @@ export class PublishersService {
         !!anyBook,
         inReview,
         live,
+        !!organization.logoUrl,
       ),
     };
   }
@@ -416,6 +419,31 @@ export class PublishersService {
       context.organization.website = dto.website.trim();
     }
     await context.organization.save();
+    return this.getSession(userId);
+  }
+
+  async uploadLogo(userId: string, file: Express.Multer.File) {
+    const context = await this.requireOwnerContext(userId);
+    if (context.organization.status === OrganizationStatus.SUSPENDED) {
+      throw new ForbiddenException({
+        message: 'This house is suspended. Profile changes are paused.',
+        code: 'ORG_SUSPENDED',
+      });
+    }
+    if (!file) {
+      throw new BadRequestException({
+        message: 'Choose a logo image.',
+        code: 'FILE_INVALID',
+      });
+    }
+    this.storageService.assert(file, 'cover');
+    const previous = this.logoKey(context.organization.logoUrl);
+    const result = await this.storageService.upload(file, 'logos');
+    context.organization.logoUrl = result.url;
+    await context.organization.save();
+    if (previous && previous !== result.key) {
+      await this.storageService.delete(previous);
+    }
     return this.getSession(userId);
   }
 
@@ -821,6 +849,7 @@ export class PublishersService {
     booksReady = false,
     inReview = 0,
     live = 0,
+    logoReady = false,
   ) {
     return {
       termsAccepted,
@@ -828,7 +857,14 @@ export class PublishersService {
       booksReady,
       inReview,
       live,
+      logoReady,
     };
+  }
+
+  private logoKey(url: string | null) {
+    if (!url?.startsWith('/uploads/')) return null;
+    const key = url.slice('/uploads/'.length);
+    return key.startsWith('logos/') ? key : null;
   }
 
   private async uniqueSlug(source: string) {

@@ -1,4 +1,5 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -31,6 +32,12 @@ export class PublisherPortalController {
     @Body() dto: UpdatePublisherOrganizationDto,
   ) {
     return this.publishersService.updateOrganization(userId, dto);
+  }
+
+  @Post('organization/logo')
+  @UseInterceptors(FileInterceptor('logo'))
+  uploadLogo(@CurrentUser('sub') userId: string, @UploadedFile() file: Express.Multer.File) {
+    return this.publishersService.uploadLogo(userId, file);
   }
 
   @Get('staff')
