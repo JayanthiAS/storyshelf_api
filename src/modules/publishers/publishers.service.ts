@@ -382,7 +382,7 @@ export class PublishersService {
         orgRole: membership.orgRole,
         status: membership.status,
       },
-      agreement: agreement ? this.publicAgreement(agreement) : null,
+      agreement: this.presentAgreement(agreement),
       checklist: this.checklist(
         !!agreement?.acceptedAt,
         !!organization.website,
@@ -445,6 +445,52 @@ export class PublishersService {
       await this.storageService.delete(previous);
     }
     return this.getSession(userId);
+  }
+
+  async acceptCurrentTerms(userId: string, acceptTerms: boolean) {
+    if (acceptTerms !== true) {
+      throw new BadRequestException('Accept the current complimentary terms to continue.');
+    }
+    const context = await this.requireOwnerContext(userId);
+    if (context.organization.status === OrganizationStatus.SUSPENDED) {
+      throw new ForbiddenException({
+        message: 'This house is suspended. Profile changes are paused.',
+        code: 'ORG_SUSPENDED',
+      });
+    }
+    await this.agreementModel.updateOne(
+      {
+        organizationId: context.organization._id,
+        termsVersion: COMPLIMENTARY_TERMS_VERSION,
+      },
+      {
+        $set: {
+          acceptedBy: context.membership.userId,
+          acceptedAt: new Date(),
+          commercialModel: 'complimentary',
+          territory: ['WORLD'],
+        },
+        $setOnInsert: {
+          revenueShareBps: null,
+          currency: null,
+        },
+      },
+      { upsert: true },
+    );
+    return this.getSession(userId);
+  }
+
+  async assertCurrentTerms(organizationId: Types.ObjectId) {
+    const agreement = await this.agreementModel.findOne({
+      organizationId,
+      termsVersion: COMPLIMENTARY_TERMS_VERSION,
+    });
+    if (!agreement?.acceptedAt) {
+      throw new ForbiddenException({
+        message: 'The house owner must accept the current complimentary terms before submitting a book.',
+        code: 'TERMS_REQUIRED',
+      });
+    }
   }
 
   async listStaff(userId: string) {
@@ -818,6 +864,19 @@ export class PublishersService {
       primaryContactEmail: organization.primaryContactEmail,
       createdAt: organization.get('createdAt'),
       updatedAt: organization.get('updatedAt'),
+    };
+  }
+
+  private presentAgreement(agreement: PublisherAgreementDocument | null) {
+    if (agreement?.acceptedAt) return this.publicAgreement(agreement);
+    return {
+      termsVersion: COMPLIMENTARY_TERMS_VERSION,
+      termsText: COMPLIMENTARY_TERMS_TEXT,
+      commercialModel: 'complimentary',
+      acceptedAt: null,
+      territory: ['WORLD'],
+      revenueShareBps: null,
+      currency: null,
     };
   }
 

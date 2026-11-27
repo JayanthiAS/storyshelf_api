@@ -7,6 +7,7 @@ import { Role } from '../../common/enums/role.enum';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import {
+  AcceptCurrentTermsDto,
   InviteStaffDto,
   UpdatePublisherOrganizationDto,
   UpdateStaffRoleDto,
@@ -38,6 +39,11 @@ export class PublisherPortalController {
   @UseInterceptors(FileInterceptor('logo'))
   uploadLogo(@CurrentUser('sub') userId: string, @UploadedFile() file: Express.Multer.File) {
     return this.publishersService.uploadLogo(userId, file);
+  }
+
+  @Post('terms/accept')
+  acceptTerms(@CurrentUser('sub') userId: string, @Body() dto: AcceptCurrentTermsDto) {
+    return this.publishersService.acceptCurrentTerms(userId, dto.acceptTerms);
   }
 
   @Get('staff')

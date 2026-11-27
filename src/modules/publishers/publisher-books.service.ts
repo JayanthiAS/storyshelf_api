@@ -171,6 +171,7 @@ export class PublisherBooksService {
         code: 'SUBMIT_INCOMPLETE',
       });
     }
+    await this.publishersService.assertCurrentTerms(organization._id);
     book.submissionStatus = SubmissionStatus.SUBMITTED;
     book.submittedBy = membership.userId;
     book.submittedAt = new Date();

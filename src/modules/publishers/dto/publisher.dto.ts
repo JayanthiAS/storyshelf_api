@@ -72,6 +72,13 @@ export class AcceptPublisherInviteDto {
   acceptTerms: boolean;
 }
 
+export class AcceptCurrentTermsDto {
+  @ApiProperty()
+  @IsBoolean()
+  @Equals(true)
+  acceptTerms: boolean;
+}
+
 export class UpdatePublisherOrganizationDto {
   @ApiPropertyOptional()
   @IsOptional()
